@@ -49,14 +49,16 @@ router.post("/register", async (req, res, next) => {
       return res.status(409).json({ error: "Merchant with this email already exists" });
     }
 
-    // Generate a secure API key
+    // Generate secure credentials
     const apiKey = `sk_${randomBytes(24).toString("hex")}`;
+    const webhookSecret = `whsec_${randomBytes(24).toString("hex")}`;
 
     const payload = {
       email,
       business_name,
       notification_email,
       api_key: apiKey,
+      webhook_secret: webhookSecret,
       created_at: new Date().toISOString()
     };
 
@@ -78,7 +80,8 @@ router.post("/register", async (req, res, next) => {
         email: merchant.email,
         business_name: merchant.business_name,
         notification_email: merchant.notification_email,
-        api_key: merchant.api_key, // Only returned once on registration
+        api_key: merchant.api_key,
+        webhook_secret: merchant.webhook_secret,
         created_at: merchant.created_at
       }
     });

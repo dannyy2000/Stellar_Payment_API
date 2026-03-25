@@ -54,10 +54,31 @@ export default function RegistrationForm() {
                 {registeredMerchant.api_key}
               </code>
               <button
-                onClick={copyApiKey}
+                onClick={() => {
+                  navigator.clipboard.writeText(registeredMerchant.api_key);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                }}
                 className="flex h-10 items-center justify-center rounded-lg bg-mint px-4 text-xs font-bold text-black transition-all hover:bg-glow"
               >
                 {copied ? "COPIED" : "COPY"}
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-col gap-3">
+            <label className="text-xs font-medium text-slate-300">Webhook Secret</label>
+            <div className="flex items-center gap-2 overflow-hidden rounded-xl border border-white/10 bg-black/40 p-1 pl-4">
+              <code className="flex-1 truncate font-mono text-sm text-mint">
+                {registeredMerchant.webhook_secret}
+              </code>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(registeredMerchant.webhook_secret);
+                }}
+                className="flex h-10 items-center justify-center rounded-lg border border-white/10 px-4 text-xs font-bold text-white transition-all hover:bg-white/10"
+              >
+                COPY
               </button>
             </div>
           </div>

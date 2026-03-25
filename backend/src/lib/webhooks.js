@@ -1,12 +1,18 @@
+import { createHmac } from "crypto";
+
 const RETRY_DELAYS_MS = [10_000, 30_000, 60_000]; // 10s, 30s, 60s
 
-async function attempt(url, payload) {
+/**
+ * Signs a serialized payload string with HMAC-SHA256 using the shared secret.
+ */
+export function signPayload(rawBody, secret) {
+  return createHmac("sha256", secret).update(rawBody).digest("hex");
+}
+
+async function attempt(url, payload, headers) {
   const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "User-Agent": "stellar-payment-api/0.1"
-    },
+    headers,
     body: JSON.stringify(payload)
   });
 
@@ -14,19 +20,23 @@ async function attempt(url, payload) {
   return { ok: response.ok, status: response.status, body: text };
 }
 
-function scheduleRetries(url, payload) {
+function scheduleRetries(url, payload, headers) {
   let attemptIndex = 0;
 
   function retry() {
-    attempt(url, payload).then((result) => {
-      if (!result.ok && attemptIndex < RETRY_DELAYS_MS.length - 1) {
+    attempt(url, payload, headers).then((result) => {
+      if (!result.ok && attemptIndex < RETRY_DELAYS_MS.length) {
+        const delay = RETRY_DELAYS_MS[attemptIndex];
         attemptIndex++;
-        setTimeout(retry, RETRY_DELAYS_MS[attemptIndex]);
+        console.log(`Webhook retry ${attemptIndex} for ${url} in ${delay}ms`);
+        setTimeout(retry, delay);
       }
-    }).catch(() => {
-      if (attemptIndex < RETRY_DELAYS_MS.length - 1) {
+    }).catch((err) => {
+      if (attemptIndex < RETRY_DELAYS_MS.length) {
+        const delay = RETRY_DELAYS_MS[attemptIndex];
         attemptIndex++;
-        setTimeout(retry, RETRY_DELAYS_MS[attemptIndex]);
+        console.warn(`Webhook retry ${attemptIndex} (error) for ${url} in ${delay}ms:`, err.message);
+        setTimeout(retry, delay);
       }
     });
   }
@@ -34,37 +44,8 @@ function scheduleRetries(url, payload) {
   setTimeout(retry, RETRY_DELAYS_MS[0]);
 }
 
-export async function sendWebhook(url, payload) {
-import { createHmac } from "crypto";
-
-/**
- * Signs a serialised payload string with HMAC-SHA256 using the shared secret.
- *
- * @param {string} rawBody   - The exact JSON string that will be sent as the
- *                             request body (produced by JSON.stringify(payload)).
- * @param {string} secret    - The merchant's shared webhook secret.
- * @returns {string}           Hex-encoded HMAC-SHA256 digest.
- */
-export function signPayload(rawBody, secret) {
-  return createHmac("sha256", secret).update(rawBody).digest("hex");
-}
-
 /**
  * Sends a signed webhook POST request to `url`.
- *
- * When WEBHOOK_SECRET is set (or a per-call `secret` is provided) the
- * serialised body is signed and the signature is attached as:
- *
- *   Stellar-Signature: sha256=<hex-digest>
- *
- * Merchants verify authenticity by computing the same HMAC over the raw
- * request body and comparing it to this header value.
- *
- * @param {string} url        - Merchant webhook endpoint.
- * @param {object} payload    - Data to send (will be JSON-serialised).
- * @param {string} [secret]   - Overrides the WEBHOOK_SECRET env var when
- *                              supplied (useful for per-merchant secrets).
- * @returns {Promise<{ok:boolean, skipped?:boolean, status?:number, body?:string, error?:string, signed?:boolean}>}
  */
 export async function sendWebhook(url, payload, secret) {
   if (!url) return { ok: false, skipped: true };
@@ -83,29 +64,17 @@ export async function sendWebhook(url, payload, secret) {
   }
 
   try {
-    const result = await attempt(url, payload);
+    const result = await attempt(url, payload, headers);
 
     if (!result.ok) {
-      scheduleRetries(url, payload);
+      console.warn(`Webhook to ${url} failed with status ${result.status}. Scheduling retries.`);
+      scheduleRetries(url, payload, headers);
     }
 
-    return result;
+    return { ...result, signed: !!signingSecret };
   } catch (err) {
-    scheduleRetries(url, payload);
-    return { ok: false, error: err.message };
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: rawBody
-    });
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      return { ok: false, status: response.status, body: text, signed: !!signingSecret };
-    }
-
-    return { ok: true, status: response.status, signed: !!signingSecret };
-  } catch (err) {
+    console.error(`Webhook to ${url} encountered an error: ${err.message}. Scheduling retries.`);
+    scheduleRetries(url, payload, headers);
     return { ok: false, error: err.message, signed: !!signingSecret };
   }
 }

@@ -109,7 +109,7 @@ router.post("/verify-payment/:id", async (req, res, next) => {
     const { data, error } = await supabase
       .from("payments")
       .select(
-        "id, amount, asset, asset_issuer, recipient, status, tx_id, webhook_url"
+        "id, amount, asset, asset_issuer, recipient, status, tx_id, webhook_url, merchants(webhook_secret)"
       )
       .eq("id", req.params.id)
       .maybeSingle();
@@ -148,6 +148,8 @@ router.post("/verify-payment/:id", async (req, res, next) => {
       throw updateError;
     }
 
+    const merchantSecret = data.merchants?.webhook_secret;
+
     const webhookResult = await sendWebhook(data.webhook_url, {
       event: "payment.confirmed",
       payment_id: data.id,
@@ -156,7 +158,7 @@ router.post("/verify-payment/:id", async (req, res, next) => {
       asset_issuer: data.asset_issuer,
       recipient: data.recipient,
       tx_id: match.transaction_hash
-    });
+    }, merchantSecret);
 
     if (!webhookResult.ok && !webhookResult.skipped) {
       console.warn("Webhook failed", webhookResult);
