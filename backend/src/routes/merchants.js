@@ -3,6 +3,7 @@ import { randomBytes } from "crypto";
 import { z } from "zod";
 import { supabase } from "../lib/supabase.js";
 import {
+  merchantProfileUpdateZodSchema,
   registerMerchantZodSchema,
   sessionBrandingSchema,
 } from "../lib/request-schemas.js";
@@ -79,6 +80,7 @@ router.post("/register-merchant", async (req, res, next) => {
       notification_email,
       api_key: apiKey,
       webhook_secret: webhookSecret,
+      merchant_settings: resolveMerchantSettings(body.merchant_settings),
       created_at: new Date().toISOString()
     };
 
@@ -100,6 +102,7 @@ router.post("/register-merchant", async (req, res, next) => {
         email: merchant.email,
         business_name: merchant.business_name,
         notification_email: merchant.notification_email,
+        merchant_settings: resolveMerchantSettings(merchant.merchant_settings),
         api_key: merchant.api_key,
         webhook_secret: merchant.webhook_secret,
         created_at: merchant.created_at

@@ -21,6 +21,9 @@ const DEFAULT_BRANDING = {
   secondary_color: "#b8ffe2",
   background_color: "#050608",
 };
+const DEFAULT_MERCHANT_SETTINGS = {
+  send_success_emails: true,
+};
 
 type SettingsTab = "api" | "branding" | "addresses";
 
@@ -166,6 +169,37 @@ export default function SettingsPage() {
 
     loadBranding();
   }, [apiKey]);
+
+  useEffect(() => {
+    if (!apiKey) return;
+
+    const loadProfile = async () => {
+      setLoadingProfile(true);
+      setProfileError(null);
+
+      try {
+        const res = await fetch(`${API_URL}/api/merchant-profile`, {
+          headers: { "x-api-key": apiKey },
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Failed to load profile");
+        setMerchantSettings({
+          send_success_emails:
+            data.merchant?.merchant_settings?.send_success_emails ?? true,
+        });
+        if (data.merchant) {
+          setMerchant(data.merchant);
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Failed to load profile";
+        setProfileError(msg);
+      } finally {
+        setLoadingProfile(false);
+      }
+    };
+
+    loadProfile();
+  }, [apiKey, setMerchant]);
 
   const startRotate = () => {
     setRotateError(null);
@@ -506,7 +540,7 @@ export default function SettingsPage() {
               </div>
             )}
           </section>
-        </div> : (
+        </div> : activeTab === "branding" ? (
           <section className="flex flex-col gap-5">
             <div className="flex flex-col gap-1">
               <h2 className="text-xs font-medium uppercase tracking-wider text-slate-400">

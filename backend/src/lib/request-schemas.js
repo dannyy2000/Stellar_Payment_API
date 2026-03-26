@@ -146,7 +146,36 @@ export const registerMerchantZodSchema = z.object({
         .optional(),
     })
     .optional(),
+  merchant_settings: z
+    .object({
+      send_success_emails: z.boolean().optional(),
+    })
+    .optional(),
 });
+
+export const merchantProfileUpdateZodSchema = z
+  .object({
+    notification_email: optionalTrimmedString().refine((value) => {
+      if (!value) {
+        return true;
+      }
+
+      return z.string().email().safeParse(value).success;
+    }, "Invalid notification_email format"),
+    merchant_settings: z
+      .object({
+        send_success_emails: z.boolean().optional(),
+      })
+      .optional(),
+  })
+  .refine(
+    (value) =>
+      value.notification_email !== undefined ||
+      value.merchant_settings !== undefined,
+    {
+      message: "Provide at least one field to update",
+    },
+  );
 
 export const sessionBrandingSchema = z
   .object({
