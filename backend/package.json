@@ -21,6 +21,8 @@
     "framer-motion": "^12.38.0",
     "morgan": "^1.10.0",
     "pg": "^8.20.0",
+    "rate-limit-redis": "^4.3.1",
+    "redis": "^5.11.0",
     "stellar-sdk": "^12.1.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",

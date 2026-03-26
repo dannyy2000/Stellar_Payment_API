@@ -1,11 +1,11 @@
 import cors from "cors";
-import 'dotenv/config';
+import "dotenv/config";
 import express from "express";
 import morgan from "morgan";
 import swaggerJsdoc from "swagger-jsdoc";
 import swaggerUi from "swagger-ui-express";
 import { ZodError } from "zod";
-import paymentsRouter from "./routes/payments.js";
+import createPaymentsRouter from "./routes/payments.js";
 import merchantsRouter from "./routes/merchants.js";
 import metricsRouter from "./routes/metrics.js";
 import { requireApiKeyAuth } from "./lib/auth.js";
@@ -15,8 +15,18 @@ import { pool, closePool } from "./lib/db.js";
 import { validateEnvironmentVariables } from "./lib/env-validation.js";
 import { formatZodError } from "./lib/request-schemas.js";
 import { idempotencyMiddleware } from "./lib/idempotency.js";
+import { closeRedisClient, connectRedisClient } from "./lib/redis.js";
+import {
+  createRedisRateLimitStore,
+  createVerifyPaymentRateLimit,
+} from "./lib/rate-limit.js";
 
 validateEnvironmentVariables();
+
+const redisClient = await connectRedisClient();
+const verifyPaymentRateLimit = createVerifyPaymentRateLimit({
+  store: createRedisRateLimitStore({ client: redisClient }),
+});
 
 const app = express();
 const port = process.env.PORT || 4000;
@@ -106,14 +116,14 @@ app.use("/api/create-payment", requireApiKeyAuth());
 app.use("/api/create-payment", idempotencyMiddleware);
 app.use("/api/payments", requireApiKeyAuth());
 app.use("/api/rotate-key", requireApiKeyAuth());
-app.use("/api", paymentsRouter);
+app.use("/api", createPaymentsRouter({ verifyPaymentRateLimit }));
 app.use("/api", merchantsRouter);
 app.use("/api", metricsRouter);
 
 app.use((err, req, res, next) => {
   if (err instanceof ZodError) {
     return res.status(400).json({
-      error: formatZodError(err)
+      error: formatZodError(err),
     });
   }
 
@@ -142,6 +152,7 @@ function shutdown(signal) {
   console.log(`${signal} received — closing server and pg pool...`);
   server.close(async () => {
     await closePool();
+    await closeRedisClient();
     console.log("pg pool closed. Goodbye.");
     process.exit(0);
   });

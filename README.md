@@ -36,6 +36,8 @@ cp .env.example .env
 ```
 SUPABASE_URL=your_supabase_url
 SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+DATABASE_URL=your_supabase_transaction_pooler_uri
+REDIS_URL=redis://localhost:6379
 STELLAR_NETWORK=testnet
 # Optional overrides:
 STELLAR_HORIZON_URL=
@@ -54,6 +56,8 @@ npm run dev
 ```
 
 API will be available at `http://localhost:4000`.
+
+Rate limiting uses Redis-backed shared state, so multiple API instances behind a load balancer enforce the same counters.
 
 ## API Endpoints
 

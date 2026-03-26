@@ -4,6 +4,7 @@ function validateEnvironmentVariables() {
     'SUPABASE_SERVICE_ROLE_KEY',
     'STELLAR_NETWORK',
     'DATABASE_URL',
+    'REDIS_URL',
   ];
 
   const missing = required.filter(key => !process.env[key]);
