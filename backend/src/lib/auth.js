@@ -34,7 +34,7 @@ export function createApiKeyAuth({ supabaseClient = null } = {}) {
 
       const { data: merchant, error } = await client
         .from("merchants")
-        .select("id, email, business_name, notification_email, branding_config")
+        .select("id, email, business_name, notification_email, branding_config, webhook_secret, payment_limits")
         .eq("api_key", apiKey)
         .maybeSingle();
 

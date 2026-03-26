@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useHydrateMerchantStore } from "@/lib/merchant-store";
@@ -154,30 +154,33 @@ const dashboardMobileNavLinks: DashboardNavLink[] = [
 export default function Navbar() {
   const pathname = usePathname();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const network =
-    (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? "testnet").toLowerCase();
-  const isMainnet = network === "public" || network === "mainnet";
-  const networkLabel = isMainnet ? "MAINNET" : "TESTNET";
-  const activeDashboardMobileNavLinks = dashboardMobileNavLinks.filter(
-    (link) => link.enabled,
-  );
-  const showMobileBottomNav = activeDashboardMobileNavLinks.some((link) =>
-    isActive(pathname, link.href),
-  );
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useHydrateMerchantStore();
 
-  useEffect(() => {
-    setIsMenuOpen(false);
-  }, [pathname]);
+  const toggleMenu = () => {
+    setIsMenuOpen((prev) => !prev);
+  };
 
+  // Close on Escape and return focus to the trigger button
   useEffect(() => {
-    document.body.classList.toggle("dashboard-mobile-nav", showMobileBottomNav);
-
-    return () => {
-      document.body.classList.remove("dashboard-mobile-nav");
+    if (!isMenuOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setIsMenuOpen(false);
+        triggerRef.current?.focus();
+      }
     };
-  }, [showMobileBottomNav]);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isMenuOpen]);
+
+  const navLinks = [
+    { href: "/", label: "Home" },
+    { href: "/dashboard/create", label: "Create Payment" },
+    { href: "/settings", label: "Settings" },
+    { href: "/register", label: "Register" },
+  ];
 
   return (
     <>
@@ -208,6 +211,43 @@ export default function Navbar() {
                 ))}
               </div>
 
+          {/* Mobile Menu Button */}
+          <button
+            ref={triggerRef}
+            onClick={toggleMenu}
+            className="flex flex-col gap-1.5 md:hidden"
+            aria-label="Toggle menu"
+            aria-expanded={isMenuOpen}
+            aria-controls="mobile-nav-menu"
+          >
+            {/* Network Badge */}
+            <span
+              aria-label={`Network: ${networkLabel}`}
+              className={`rounded-full border px-3 py-1 text-[10px] font-semibold tracking-[0.2em] ${
+                isMainnet
+                  ? "border-green-500/40 bg-green-500/15 text-green-300"
+                  : "border-yellow-500/50 bg-yellow-500/15 text-yellow-300"
+              }`}
+            >
+              {networkLabel}
+            </span>
+
+            {/* Mobile Menu Button */}
+            <button
+              onClick={toggleMenu}
+              className="flex flex-col gap-1.5 md:hidden"
+              aria-label="Toggle menu"
+            >
+              <span
+                className={`block h-0.5 w-6 bg-white transition-all ${
+                  isMenuOpen ? "translate-y-2 rotate-45" : ""
+                }`}
+              ></span>
+              <span
+                className={`block h-0.5 w-6 bg-white transition-all ${
+                  isMenuOpen ? "opacity-0" : ""
+                }`}
+              ></span>
               <span
                 aria-label={`Network: ${networkLabel}`}
                 className={`rounded-full border px-3 py-1 text-[10px] font-semibold tracking-[0.2em] ${
@@ -269,39 +309,27 @@ export default function Navbar() {
         </div>
       </nav>
 
-      {showMobileBottomNav && (
-        <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-white/10 bg-black/85 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur md:hidden">
-          <div
-            className="mx-auto grid max-w-md gap-2 px-4"
-            style={{
-              gridTemplateColumns: `repeat(${activeDashboardMobileNavLinks.length}, minmax(0, 1fr))`,
-            }}
-          >
-            {activeDashboardMobileNavLinks.map((link) => {
-              const active = isActive(pathname, link.href);
-
-              return (
-                <Link
-                  key={link.href}
-                  href={link.href}
-                  aria-label={link.label}
-                  aria-current={active ? "page" : undefined}
-                  className={`group relative flex min-h-14 items-center justify-center rounded-2xl border transition-all ${
-                    active
-                      ? "border-mint/40 bg-mint/10 shadow-[0_0_20px_rgba(94,242,192,0.12)]"
-                      : "border-white/5 bg-white/[0.03] hover:border-white/10 hover:bg-white/[0.06]"
-                  }`}
-                >
-                  <span className="pointer-events-none absolute -top-8 rounded-full border border-white/10 bg-slate-950/95 px-2 py-1 text-[10px] font-medium text-white opacity-0 shadow-lg transition-all duration-200 group-hover:-translate-y-1 group-hover:opacity-100 group-focus-visible:-translate-y-1 group-focus-visible:opacity-100">
-                    {link.label}
-                  </span>
-                  {link.icon(active)}
-                </Link>
-              );
-            })}
+        {/* Mobile Menu — uses hidden attribute so the panel stays in DOM for
+            reliable aria-controls reference; visibility is controlled via CSS */}
+        <div
+          id="mobile-nav-menu"
+          hidden={!isMenuOpen}
+          className="border-t border-white/10 py-4 md:hidden"
+        >
+          <div className="flex flex-col gap-4">
+            {navLinks.map((link) => (
+              <Link
+                key={link.href}
+                href={link.href}
+                onClick={() => setIsMenuOpen(false)}
+                className="text-sm text-slate-300 transition-colors hover:text-white"
+              >
+                {link.label}
+              </Link>
+            ))}
           </div>
-        </nav>
-      )}
-    </>
+        </div>
+      </div>
+    </nav>
   );
 }

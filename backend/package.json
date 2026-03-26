@@ -7,7 +7,9 @@
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
     "test": "vitest run",
-    "purge:webhook-logs": "node scripts/purge-webhook-logs.js"
+    "purge:webhook-logs": "node scripts/purge-webhook-logs.js",
+    "migrate": "knex migrate:latest --knexfile knexfile.js",
+    "migrate:rollback": "knex migrate:rollback --knexfile knexfile.js"
   },
   "devDependencies": {
     "nodemon": "^3.1.14",
@@ -21,6 +23,7 @@
     "express": "^4.19.2",
     "express-rate-limit": "^8.3.1",
     "framer-motion": "^12.38.0",
+    "knex": "^3.2.6",
     "morgan": "^1.10.0",
     "pg": "^8.20.0",
     "rate-limit-redis": "^4.3.1",

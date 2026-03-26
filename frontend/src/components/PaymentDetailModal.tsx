@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { isFreighterAvailable } from "@/lib/freighter";
+import { useWallet } from "@/lib/wallet-context";
 import { usePayment } from "@/lib/usePayment";
+import WalletSelector from "@/components/WalletSelector";
 import CopyButton from "@/components/CopyButton";
 import toast from "react-hot-toast";
 import { QRCodeSVG } from "qrcode.react";
@@ -91,9 +92,10 @@ export default function PaymentDetailModal({ paymentId, isOpen, onClose }: Payme
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [freighterReady, setFreighterReady] = useState(false);
+  const { activeProvider } = useWallet();
+  const walletReady = !!activeProvider;
 
-  const { isProcessing, error: paymentError, processPayment } = usePayment();
+  const { isProcessing, error: paymentError, processPayment } = usePayment(activeProvider);
 
   // Fetch payment details
   useEffect(() => {
@@ -142,12 +144,8 @@ export default function PaymentDetailModal({ paymentId, isOpen, onClose }: Payme
     return () => clearInterval(id);
   }, [paymentId, payment, loading, isOpen]);
 
-  // Check Freighter
-  useEffect(() => {
-    isFreighterAvailable()
-      .then(setFreighterReady)
-      .catch(() => setFreighterReady(false));
-  }, []);
+  const networkPassphrase =
+    process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE ?? "Test SDF Network ; September 2015";
 
   // Pay handler
   const handlePay = async () => {
@@ -344,7 +342,7 @@ export default function PaymentDetailModal({ paymentId, isOpen, onClose }: Payme
                 {/* CTA section */}
                 {!isSettled && !isFailed && (
                   <div className="flex flex-col gap-3 pt-2">
-                    {freighterReady ? (
+                    {walletReady ? (
                       <button
                         type="button"
                         onClick={handlePay}
@@ -360,24 +358,15 @@ export default function PaymentDetailModal({ paymentId, isOpen, onClose }: Payme
                             Processing…
                           </span>
                         ) : (
-                          "Pay with Freighter"
+                          `Pay with ${activeProvider!.name}`
                         )}
                         <div className="absolute inset-0 -z-10 bg-mint/20 opacity-0 blur-xl transition-opacity group-hover:opacity-100" />
                       </button>
                     ) : (
-                      <div className="flex flex-col gap-3">
-                        <p className="text-center text-xs text-slate-500">
-                          Freighter wallet not detected in this browser
-                        </p>
-                        <a
-                          href="https://freighter.app/"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex h-12 items-center justify-center rounded-xl border border-mint/50 font-semibold text-mint transition-all hover:bg-mint/10"
-                        >
-                          Install Freighter Extension
-                        </a>
-                      </div>
+                      <WalletSelector
+                        networkPassphrase={networkPassphrase}
+                        onConnected={() => {}}
+                      />
                     )}
                   </div>
                 )}
