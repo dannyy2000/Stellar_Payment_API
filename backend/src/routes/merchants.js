@@ -127,4 +127,45 @@ router.post("/register-merchant", async (req, res, next) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/rotate-key:
+ *   post:
+ *     summary: Rotate the authenticated merchant's API key
+ *     tags: [Merchants]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     responses:
+ *       200:
+ *         description: New API key issued; the old key is immediately invalidated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 api_key:
+ *                   type: string
+ *       401:
+ *         description: Missing or invalid x-api-key header
+ */
+router.post("/rotate-key", async (req, res, next) => {
+  try {
+    const newApiKey = `sk_${randomBytes(24).toString("hex")}`;
+
+    const { error } = await supabase
+      .from("merchants")
+      .update({ api_key: newApiKey })
+      .eq("id", req.merchant.id);
+
+    if (error) {
+      error.status = 500;
+      throw error;
+    }
+
+    res.json({ api_key: newApiKey });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

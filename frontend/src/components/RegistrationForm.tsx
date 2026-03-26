@@ -21,6 +21,7 @@ export default function RegistrationForm() {
     try {
       const data = await registerMerchant(email, businessName, notificationEmail);
       setRegisteredMerchant(data.merchant);
+      localStorage.setItem("merchant_api_key", data.merchant.api_key);
       toast.success("Merchant registered successfully!");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to register merchant";

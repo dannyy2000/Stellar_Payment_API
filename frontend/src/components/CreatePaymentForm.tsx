@@ -1,0 +1,322 @@
+"use client";
+
+import { useState, useEffect, type FormEvent } from "react";
+import CopyButton from "./CopyButton";
+import toast from "react-hot-toast";
+import Link from "next/link";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+
+// Stellar testnet USDC issuer — override via NEXT_PUBLIC_USDC_ISSUER for mainnet
+const USDC_ISSUER =
+  process.env.NEXT_PUBLIC_USDC_ISSUER ??
+  "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+
+/** Basic Stellar public-key format check (G + 55 base-32 chars = 56 total). */
+const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/;
+
+interface CreatedPayment {
+  payment_id: string;
+  payment_link: string;
+  status: string;
+}
+
+export default function CreatePaymentForm() {
+  const [amount, setAmount] = useState("");
+  const [asset, setAsset] = useState<"XLM" | "USDC">("XLM");
+  const [recipient, setRecipient] = useState("");
+  const [description, setDescription] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [created, setCreated] = useState<CreatedPayment | null>(null);
+
+  // Loaded from localStorage after hydration to avoid SSR mismatch
+  const [apiKey, setApiKey] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    setApiKey(localStorage.getItem("merchant_api_key"));
+    setHydrated(true);
+  }, []);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    // Client-side validation
+    const numAmount = parseFloat(amount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      setError("Amount must be a positive number.");
+      return;
+    }
+    if (!STELLAR_ADDRESS_RE.test(recipient.trim())) {
+      setError(
+        "Recipient must be a valid Stellar public key (56 characters, starts with G)."
+      );
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const body: Record<string, unknown> = {
+        amount: numAmount,
+        asset,
+        recipient: recipient.trim(),
+      };
+      if (asset === "USDC") body.asset_issuer = USDC_ISSUER;
+      if (description.trim()) body.description = description.trim();
+
+      const res = await fetch(`${API_URL}/api/create-payment`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey!,
+        },
+        body: JSON.stringify(body),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to create payment link");
+
+      setCreated(data);
+      toast.success("Payment link created!");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to create payment link";
+      setError(message);
+      toast.error(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleReset = () => {
+    setCreated(null);
+    setAmount("");
+    setRecipient("");
+    setDescription("");
+    setAsset("XLM");
+    setError(null);
+  };
+
+  // Avoid hydration mismatch — render nothing until localStorage is read
+  if (!hydrated) return null;
+
+  // No API key stored — direct the user to register first
+  if (!apiKey) {
+    return (
+      <div className="flex flex-col items-center gap-4 rounded-2xl border border-yellow-500/30 bg-yellow-500/10 p-8 text-center">
+        <p className="text-base font-medium text-yellow-200">No API key found</p>
+        <p className="text-sm text-slate-400">
+          Register a merchant account to get your API key and start creating
+          payment links.
+        </p>
+        <Link
+          href="/register"
+          className="mt-2 rounded-xl bg-mint px-5 py-2.5 text-sm font-bold text-black transition-all hover:bg-glow"
+        >
+          Register as Merchant
+        </Link>
+      </div>
+    );
+  }
+
+  // Success — show the generated payment link
+  if (created) {
+    return (
+      <div className="flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+        <div className="rounded-2xl border border-mint/30 bg-mint/5 p-6 backdrop-blur">
+          <div className="flex flex-col gap-2">
+            <p className="font-mono text-xs uppercase tracking-[0.2em] text-mint">
+              Payment Link Ready
+            </p>
+            <h2 className="text-xl font-semibold text-white">
+              Link Created Successfully
+            </h2>
+            <p className="text-sm text-slate-400">
+              Share this link with your customer to collect payment.
+            </p>
+          </div>
+
+          <div className="mt-6 flex flex-col gap-3">
+            <label className="text-xs font-medium text-slate-300">
+              Payment Link
+            </label>
+            <div className="flex items-center gap-2 overflow-hidden rounded-xl border border-white/10 bg-black/40 p-1 pl-4">
+              <code className="flex-1 truncate font-mono text-sm text-mint">
+                {created.payment_link}
+              </code>
+              <CopyButton text={created.payment_link} />
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+              <p className="mb-1 text-xs uppercase tracking-wider text-slate-500">
+                Payment ID
+              </p>
+              <p className="truncate font-mono text-xs text-slate-300">
+                {created.payment_id}
+              </p>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+              <p className="mb-1 text-xs uppercase tracking-wider text-slate-500">
+                Status
+              </p>
+              <p className="font-mono text-xs capitalize text-slate-300">
+                {created.status}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleReset}
+          className="text-center text-sm font-medium text-slate-400 underline underline-offset-4 transition-colors hover:text-white"
+        >
+          Create another payment link
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-6" noValidate>
+      {error && (
+        <div
+          role="alert"
+          className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400"
+        >
+          {error}
+        </div>
+      )}
+
+      <div className="flex flex-col gap-4">
+        {/* Amount */}
+        <div className="flex flex-col gap-1.5">
+          <label
+            htmlFor="amount"
+            className="text-xs font-medium uppercase tracking-wider text-slate-400"
+          >
+            Amount
+          </label>
+          <input
+            id="amount"
+            type="number"
+            min="0.0000001"
+            step="any"
+            required
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            className="rounded-xl border border-white/10 bg-white/5 p-3 text-white placeholder:text-slate-600 focus:border-mint/50 focus:outline-none focus:ring-1 focus:ring-mint/50 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            placeholder="0.00"
+          />
+        </div>
+
+        {/* Asset */}
+        <div className="flex flex-col gap-1.5">
+          <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
+            Asset
+          </span>
+          <div className="flex gap-2" role="group" aria-label="Select asset">
+            {(["XLM", "USDC"] as const).map((a) => (
+              <button
+                key={a}
+                type="button"
+                onClick={() => setAsset(a)}
+                aria-pressed={asset === a}
+                className={`flex-1 rounded-xl border py-2.5 text-sm font-medium transition-all ${
+                  asset === a
+                    ? "border-mint/50 bg-mint/10 text-mint"
+                    : "border-white/10 bg-white/5 text-slate-400 hover:border-white/20 hover:text-white"
+                }`}
+              >
+                {a}
+              </button>
+            ))}
+          </div>
+          {asset === "USDC" && (
+            <p className="text-[11px] text-slate-500">
+              Issuer:{" "}
+              <span className="font-mono">
+                {USDC_ISSUER.slice(0, 8)}…{USDC_ISSUER.slice(-6)}
+              </span>
+            </p>
+          )}
+        </div>
+
+        {/* Recipient */}
+        <div className="flex flex-col gap-1.5">
+          <label
+            htmlFor="recipient"
+            className="text-xs font-medium uppercase tracking-wider text-slate-400"
+          >
+            Recipient Address
+          </label>
+          <input
+            id="recipient"
+            type="text"
+            required
+            value={recipient}
+            onChange={(e) => setRecipient(e.target.value)}
+            className="rounded-xl border border-white/10 bg-white/5 p-3 font-mono text-sm text-white placeholder:font-sans placeholder:text-slate-600 focus:border-mint/50 focus:outline-none focus:ring-1 focus:ring-mint/50"
+            placeholder="GABC…XYZ"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+
+        {/* Description (optional) */}
+        <div className="flex flex-col gap-1.5">
+          <label
+            htmlFor="description"
+            className="text-xs font-medium uppercase tracking-wider text-slate-400"
+          >
+            Description{" "}
+            <span className="normal-case text-slate-600">(optional)</span>
+          </label>
+          <input
+            id="description"
+            type="text"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            className="rounded-xl border border-white/10 bg-white/5 p-3 text-white placeholder:text-slate-600 focus:border-mint/50 focus:outline-none focus:ring-1 focus:ring-mint/50"
+            placeholder="e.g. Invoice #42"
+          />
+        </div>
+      </div>
+
+      <button
+        type="submit"
+        disabled={loading}
+        className="group relative flex h-12 items-center justify-center rounded-xl bg-mint px-6 font-bold text-black transition-all hover:bg-glow disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {loading ? (
+          <span className="flex items-center gap-2">
+            <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24">
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+                fill="none"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              />
+            </svg>
+            Generating…
+          </span>
+        ) : (
+          "Generate Payment Link"
+        )}
+        <div className="absolute inset-0 -z-10 bg-mint/20 opacity-0 blur-xl transition-opacity group-hover:opacity-100" />
+      </button>
+    </form>
+  );
+}

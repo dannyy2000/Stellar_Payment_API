@@ -57,6 +57,7 @@ app.get("/health", async (req, res) => {
 });
 
 app.use("/api/create-payment", requireApiKeyAuth());
+app.use("/api/rotate-key", requireApiKeyAuth());
 app.use("/api", paymentsRouter);
 app.use("/api", merchantsRouter);
 
