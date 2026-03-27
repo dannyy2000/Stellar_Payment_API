@@ -52,7 +52,7 @@ export default function RecentPayments() {
     const fetchPayments = async () => {
       try {
         if (!apiKey) {
-          setError("API key not found. Please register or log in.");
+          setError("key not found. Please register or log in.");
           setLoading(false);
           return;
         }
