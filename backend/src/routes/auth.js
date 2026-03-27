@@ -142,6 +142,7 @@ router.post("/auth/verify", validateRequest({ body: authVerifySchema }), async (
       .from("merchants")
       .select("id, email, business_name, notification_email")
       .eq("recipient", clientAccount)
+      .is("deleted_at", null)
       .maybeSingle();
 
     if (error) {

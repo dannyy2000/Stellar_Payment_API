@@ -42,6 +42,7 @@ export function createApiKeyAuth({
   "id, email, business_name, notification_email, branding_config, merchant_settings, webhook_secret, webhook_secret_old, webhook_secret_expiry, webhook_version, payment_limits"
 )
         .eq("api_key", apiKey)
+        .is("deleted_at", null)
         .maybeSingle();
 
       if (error) {
