@@ -47,6 +47,7 @@ describe("createApiKeyAuth", () => {
   let from;
   let supabaseClient;
   let middleware;
+  let usageRecorder;
   let res;
   let next;
 
@@ -56,7 +57,8 @@ describe("createApiKeyAuth", () => {
     select = vi.fn(() => ({ eq }));
     from = vi.fn(() => ({ select }));
     supabaseClient = { from };
-    middleware = createApiKeyAuth({ supabaseClient });
+    usageRecorder = vi.fn();
+    middleware = createApiKeyAuth({ supabaseClient, usageRecorder });
     res = createResponse();
     res.status.mockReturnValue(res);
     next = vi.fn();
@@ -81,11 +83,12 @@ describe("createApiKeyAuth", () => {
 
     expect(from).toHaveBeenCalledWith("merchants");
     expect(select).toHaveBeenCalledWith(
-      "id, email, business_name, notification_email, branding_config, merchant_settings",
+      "id, email, business_name, notification_email, branding_config, merchant_settings, webhook_secret, webhook_secret_old, webhook_secret_expiry, payment_limits",
     );
     expect(eq).toHaveBeenCalledWith("api_key", "invalid-key");
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.json).toHaveBeenCalledWith({ error: "Invalid API key" });
+    expect(usageRecorder).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -103,6 +106,28 @@ describe("createApiKeyAuth", () => {
 
     expect(eq).toHaveBeenCalledWith("api_key", "valid-key");
     expect(req.merchant).toEqual(merchant);
+    expect(usageRecorder).toHaveBeenCalledWith({
+      merchantId: "merchant-123",
+      req,
+    });
+    expect(next).toHaveBeenCalledWith();
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it("continues auth flow when usage tracking fails", async () => {
+    const merchant = {
+      id: "merchant-123",
+      email: "merchant@example.com",
+      business_name: "Merchant Co",
+      notification_email: "ops@example.com",
+    };
+
+    maybeSingle.mockResolvedValue({ data: merchant, error: null });
+    usageRecorder.mockRejectedValue(new Error("redis down"));
+    const req = createRequest({ "x-api-key": "valid-key" });
+
+    await middleware(req, res, next);
+
     expect(next).toHaveBeenCalledWith();
     expect(res.status).not.toHaveBeenCalled();
   });

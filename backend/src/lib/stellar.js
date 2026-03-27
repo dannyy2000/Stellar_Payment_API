@@ -9,13 +9,31 @@ const HORIZON_URL =
     : "https://horizon-testnet.stellar.org");
 
 const server = new StellarSdk.Horizon.Server(HORIZON_URL);
+const HORIZON_HEALTH_TIMEOUT_MS = 2_000;
 
 export async function isHorizonReachable() {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    HORIZON_HEALTH_TIMEOUT_MS,
+  );
+
   try {
-    await server.ledgers().order("desc").limit(1).call();
-    return true;
+    const response = await fetch(HORIZON_URL, {
+      method: "GET",
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+      },
+    });
+
+    // Treat rate limiting as reachable so transient Horizon throttling
+    // doesn't fail the entire API health check.
+    return response.ok || response.status === 429;
   } catch {
     return false;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -51,8 +69,15 @@ function paymentMatchesAsset(payment, asset) {
     return payment.asset_type === "native";
   }
 
+  const expectedCode =
+    typeof asset.getCode === "function" ? asset.getCode() : asset.code;
+  const expectedIssuer =
+    typeof asset.getIssuer === "function" ? asset.getIssuer() : asset.issuer;
+
   return (
-    payment.asset_code === asset.code && payment.asset_issuer === asset.issuer
+    String(payment.asset_code || "").toUpperCase() ===
+      String(expectedCode || "").toUpperCase() &&
+    String(payment.asset_issuer || "") === String(expectedIssuer || "")
   );
 }
 
@@ -108,9 +133,12 @@ function handleHorizonError(err, context = "") {
 function memoMatches(tx, expectedMemo, expectedMemoType) {
   const txMemoType = (tx.memo_type || "none").toLowerCase();
   const wantType = (expectedMemoType || "text").toLowerCase();
+  const normalizedTxMemo = tx.memo == null ? "" : String(tx.memo);
+  const normalizedExpectedMemo =
+    expectedMemo == null ? "" : String(expectedMemo);
 
   if (txMemoType !== wantType) return false;
-  return String(tx.memo) === String(expectedMemo);
+  return normalizedTxMemo === normalizedExpectedMemo;
 }
 
 /**
@@ -128,6 +156,57 @@ async function isMultiSigAccount(accountId) {
   } catch (err) {
     console.warn(`Could not load account ${accountId}:`, err.message);
     return false;
+  }
+}
+
+/**
+ * Query Horizon for strict-receive paths.
+ * Returns the best path the sender can use to deliver `destAmount` of the
+ * destination asset, sending from `sourceAsset`.
+ *
+ * @param {object} opts
+ * @param {string} opts.sourceAccount   — Stellar public key of the sender
+ * @param {string} opts.destAssetCode   — Asset code the merchant wants to receive
+ * @param {string|null} opts.destAssetIssuer — Issuer (null for XLM)
+ * @param {string} opts.destAmount      — Amount the merchant must receive
+ * @param {string} opts.sourceAssetCode — Asset code the customer wants to send
+ * @param {string|null} opts.sourceAssetIssuer — Issuer (null for XLM)
+ * @returns {Promise<{source_amount: string, path: Array}>}
+ */
+export async function findStrictReceivePaths({
+  sourceAccount,
+  destAssetCode,
+  destAssetIssuer,
+  destAmount,
+  sourceAssetCode,
+  sourceAssetIssuer,
+}) {
+  const destAsset = resolveAsset(destAssetCode, destAssetIssuer);
+  const sourceAsset = resolveAsset(sourceAssetCode, sourceAssetIssuer);
+
+  try {
+    const result = await server
+      .strictReceivePaths([sourceAsset], destAsset, destAmount)
+      .call();
+
+    if (!result.records || result.records.length === 0) {
+      return null;
+    }
+
+    // Return the best (first) path
+    const best = result.records[0];
+    return {
+      source_amount: best.source_amount,
+      source_asset_code: best.source_asset_type === "native" ? "XLM" : best.source_asset_code,
+      source_asset_issuer: best.source_asset_issuer || null,
+      destination_amount: best.destination_amount,
+      path: best.path.map((p) => ({
+        asset_code: p.asset_type === "native" ? "XLM" : p.asset_code,
+        asset_issuer: p.asset_issuer || null,
+      })),
+    };
+  } catch (err) {
+    throw handleHorizonError(err, "strict-receive-paths");
   }
 }
 
@@ -157,10 +236,15 @@ export async function findMatchingPayment({
   const isMultiSig = await isMultiSigAccount(recipient);
 
   for (const payment of page.records) {
-    if (payment.type !== "payment") {
+    const isDirectPayment = payment.type === "payment";
+    const isPathPayment = payment.type === "path_payment_strict_receive";
+
+    if (!isDirectPayment && !isPathPayment) {
       continue;
     }
 
+    // For path payments, verify the *received* asset and amount
+    // (the destination gets exactly what the merchant asked for)
     if (!paymentMatchesAsset(payment, asset)) {
       continue;
     }

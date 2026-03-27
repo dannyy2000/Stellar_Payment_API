@@ -5,9 +5,13 @@ create table if not exists merchants (
   notification_email text not null,
   api_key text unique not null,
   webhook_secret text not null,
+  webhook_version text not null default 'v1',
+  webhook_secret_old text,
+  webhook_secret_expiry timestamptz,
   recipient text,
   branding_config jsonb,
   merchant_settings jsonb not null default '{"send_success_emails": true}'::jsonb,
+  metadata jsonb,
   created_at timestamptz not null default now()
 );
 
@@ -24,12 +28,15 @@ create table if not exists payments (
   webhook_url text,
   status text not null default 'pending',
   tx_id text,
+  completion_duration_seconds integer,
   metadata jsonb,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  deleted_at timestamptz
 );
 
 create index if not exists payments_status_idx on payments(status);
 create index if not exists payments_merchant_idx on payments(merchant_id);
+create index if not exists payments_deleted_at_idx on payments(deleted_at);
 
 create table if not exists webhook_delivery_logs (
   id uuid primary key default gen_random_uuid(),
@@ -169,6 +176,19 @@ alter table webhook_delivery_logs enable row level security;
 create policy webhook_delivery_logs_select_own
   on webhook_delivery_logs for select
   using (
+    exists (
+      select 1 from payments p
+      where p.id = webhook_delivery_logs.payment_id
+        and (
+          p.merchant_id = auth.uid()
+          or p.merchant_id = nullif(current_setting('app.current_merchant_id', true), '')::uuid
+        )
+    )
+  );
+
+create policy webhook_delivery_logs_insert_own
+  on webhook_delivery_logs for insert
+  with check (
     exists (
       select 1 from payments p
       where p.id = webhook_delivery_logs.payment_id

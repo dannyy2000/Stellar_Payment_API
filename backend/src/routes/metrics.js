@@ -1,5 +1,6 @@
 import express from "express";
 import { requireApiKeyAuth } from "../lib/auth.js";
+import { withMerchantContext } from "./db-rls.js";
 
 const router = express.Router();
 
@@ -102,7 +103,15 @@ router.get("/metrics/summary", requireApiKeyAuth(), async (req, res, next) => {
     // First day of last month
     const lastMonthStart = new Date(lastMonthYear, lastMonth, 1);
     // Last day of last month (day before first day of current month)
-    const lastMonthEnd = new Date(currentYear, currentMonth, 0, 23, 59, 59, 999);
+    const lastMonthEnd = new Date(
+      currentYear,
+      currentMonth,
+      0,
+      23,
+      59,
+      59,
+      999
+    );
 
     // Query for last month's revenue
     const lastMonthQuery = `
@@ -135,17 +144,28 @@ router.get("/metrics/summary", requireApiKeyAuth(), async (req, res, next) => {
       ORDER BY asset, asset_issuer
     `;
 
-    const [lastMonthResult, currentMonthResult] = await Promise.all([
-      pool.query(lastMonthQuery, [merchantId, lastMonthStart, lastMonthEnd]),
-      pool.query(currentMonthQuery, [merchantId, currentMonthStart]),
-    ]);
+    const { lastMonthResult, currentMonthResult } = await withMerchantContext(
+      merchantId,
+      async (client) => {
+        const last = await client.query(lastMonthQuery, [
+          merchantId,
+          lastMonthStart,
+          lastMonthEnd,
+        ]);
+        const current = await client.query(currentMonthQuery, [
+          merchantId,
+          currentMonthStart,
+        ]);
+        return { lastMonthResult: last, currentMonthResult: current };
+      }
+    );
 
     // Format last month data
-    const lastMonthByAsset = lastMonthResult.rows.map(row => ({
+    const lastMonthByAsset = lastMonthResult.rows.map((row) => ({
       asset: row.asset,
       asset_issuer: row.asset_issuer,
       total: row.total || "0",
-      count: parseInt(row.count)
+      count: parseInt(row.count),
     }));
 
     const lastMonthTotal = lastMonthByAsset.reduce(
@@ -154,11 +174,11 @@ router.get("/metrics/summary", requireApiKeyAuth(), async (req, res, next) => {
     );
 
     // Format current month data
-    const currentMonthByAsset = currentMonthResult.rows.map(row => ({
+    const currentMonthByAsset = currentMonthResult.rows.map((row) => ({
       asset: row.asset,
       asset_issuer: row.asset_issuer,
       total: row.total || "0",
-      count: parseInt(row.count)
+      count: parseInt(row.count),
     }));
 
     const currentMonthTotal = currentMonthByAsset.reduce(
@@ -169,17 +189,17 @@ router.get("/metrics/summary", requireApiKeyAuth(), async (req, res, next) => {
     res.json({
       last_month: {
         by_asset: lastMonthByAsset,
-        total: parseFloat(lastMonthTotal.toFixed(7))
+        total: parseFloat(lastMonthTotal.toFixed(7)),
       },
       current_month: {
         by_asset: currentMonthByAsset,
-        total: parseFloat(currentMonthTotal.toFixed(7))
+        total: parseFloat(currentMonthTotal.toFixed(7)),
       },
       period: {
         last_month_start: lastMonthStart.toISOString(),
         last_month_end: lastMonthEnd.toISOString(),
-        current_month_start: currentMonthStart.toISOString()
-      }
+        current_month_start: currentMonthStart.toISOString(),
+      },
     });
   } catch (err) {
     next(err);
@@ -245,12 +265,12 @@ router.get("/metrics/revenue", requireApiKeyAuth(), async (req, res, next) => {
     const { rows } = await pool.query(query, [merchantId]);
 
     res.json({
-      revenue: rows.map(row => ({
+      revenue: rows.map((row) => ({
         asset: row.asset,
         asset_issuer: row.asset_issuer,
         total: row.total,
-        count: parseInt(row.count)
-      }))
+        count: parseInt(row.count),
+      })),
     });
   } catch (err) {
     next(err);
@@ -317,7 +337,9 @@ router.get("/metrics/volume", requireApiKeyAuth(), async (req, res, next) => {
     const range = (req.query.range || "7D").toUpperCase();
 
     if (!VALID_RANGES[range]) {
-      return res.status(400).json({ error: "Invalid range. Use 7D, 30D, or 1Y." });
+      return res
+        .status(400)
+        .json({ error: "Invalid range. Use 7D, 30D, or 1Y." });
     }
 
     const days = VALID_RANGES[range];
@@ -338,7 +360,7 @@ router.get("/metrics/volume", requireApiKeyAuth(), async (req, res, next) => {
     const { rows } = await pool.query(query, [merchantId]);
 
     // Collect all distinct assets across the result set
-    const assetSet = new Set(rows.map(r => r.asset));
+    const assetSet = new Set(rows.map((r) => r.asset));
     const assets = Array.from(assetSet);
 
     // Build a date-keyed map: { "2026-03-01": { XLM: 5.0, USDC: 100.0 } }

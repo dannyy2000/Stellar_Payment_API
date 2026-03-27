@@ -10,6 +10,7 @@ import {
   verifyChallenge,
   generateSessionToken,
 } from "../lib/sep10-auth.js";
+import { logLoginAttempt } from "../lib/audit.js";
 
 const router = express.Router();
 
@@ -108,6 +109,9 @@ router.post("/auth/challenge", async (req, res, next) => {
  *         description: Authentication failed
  */
 router.post("/auth/verify", async (req, res, next) => {
+  const ipAddress = req.ip ?? null;
+  const userAgent = req.get("user-agent") ?? null;
+
   try {
     const { transaction } = req.body;
 
@@ -135,6 +139,12 @@ router.post("/auth/verify", async (req, res, next) => {
     // Verify challenge signature
     const verification = verifyChallenge(transaction, clientAccount);
     if (!verification.valid) {
+      await logLoginAttempt({
+        merchantId: null,
+        ipAddress,
+        userAgent,
+        status: "failure",
+      });
       return res.status(401).json({ error: verification.error });
     }
 
@@ -151,6 +161,12 @@ router.post("/auth/verify", async (req, res, next) => {
     }
 
     if (!merchant) {
+      await logLoginAttempt({
+        merchantId: null,
+        ipAddress,
+        userAgent,
+        status: "failure",
+      });
       return res.status(401).json({
         error: "No merchant account found for this Stellar address",
       });
@@ -158,6 +174,14 @@ router.post("/auth/verify", async (req, res, next) => {
 
     // Generate session token
     const token = generateSessionToken(merchant.id, clientAccount);
+
+    // Audit: successful login
+    await logLoginAttempt({
+      merchantId: merchant.id,
+      ipAddress,
+      userAgent,
+      status: "success",
+    });
 
     res.json({
       token,

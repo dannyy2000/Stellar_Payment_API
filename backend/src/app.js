@@ -1,15 +1,16 @@
 import cors from "cors";
 import express from "express";
 import { Server as SocketIOServer } from "socket.io";
-import swaggerJsdoc from "swagger-jsdoc";
 import swaggerUi from "swagger-ui-express";
 import { ZodError } from "zod";
 import { httpLogger, logger } from "./lib/logger.js";
+import { createSwaggerSpec } from "./swagger.js";
 
 import createPaymentsRouter from "./routes/payments.js";
 import merchantsRouter from "./routes/merchants.js";
 import metricsRouter from "./routes/metrics.js";
 import webhooksRouter from "./routes/webhooks.js";
+import prometheusRouter from "./routes/prometheus.js";
 
 import { requireApiKeyAuth } from "./lib/auth.js";
 import { isHorizonReachable } from "./lib/stellar.js";
@@ -50,17 +51,8 @@ export async function createApp({ redisClient }) {
 
   const port = process.env.PORT || 4000;
 
-  const swaggerSpec = swaggerJsdoc({
-    definition: {
-      openapi: "3.0.0",
-      info: {
-        title: "Stellar Payment API",
-        version: "0.1.0",
-        description: "API for creating and verifying Stellar network payments",
-      },
-      servers: [{ url: `http://localhost:${port}` }],
-    },
-    apis: ["./src/routes/*.js"],
+  const swaggerSpec = createSwaggerSpec({
+    serverUrl: `http://localhost:${port}`,
   });
 
   app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
@@ -85,7 +77,6 @@ export async function createApp({ redisClient }) {
   app.use(httpLogger);
   // Expose the root logger on app.locals so routes can use req.log or app.locals.logger
   app.locals.logger = logger;
-
 
   // Health check
   app.get("/health", async (req, res) => {
@@ -138,6 +129,9 @@ export async function createApp({ redisClient }) {
   app.use("/api", merchantsRouter);
   app.use("/api", metricsRouter);
   app.use("/api", webhooksRouter);
+
+  // Prometheus Metrics endpoint
+  app.use("/", prometheusRouter);
 
   app.use((err, req, res, next) => {
     if (err instanceof ZodError) {

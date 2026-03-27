@@ -6,6 +6,7 @@ import {
   paymentZodSchema,
   paymentSessionZodSchema,
   registerMerchantZodSchema,
+  v2PaymentSessionSchema,
 } from "./request-schemas.js";
 
 describe("paymentZodSchema", () => {
@@ -78,30 +79,90 @@ describe("paymentZodSchema", () => {
     ).toThrowError("Invalid memo_type. Must be one of: text, id, hash, return");
   });
 
-  it("validates hash memo format", () => {
+  it("accepts a valid return memo (32-byte hex)", () => {
+    const hash = "a".repeat(64);
+    const result = paymentZodSchema.parse({
+      amount: 50,
+      asset: "XLM",
+      recipient: "GRECIPIENT",
+      memo: hash,
+      memo_type: "return",
+    });
+    expect(result.memo).toBe(hash);
+    expect(result.memo_type).toBe("return");
+  });
+
+  it("accepts a valid return memo (unsigned 64-bit integer)", () => {
+    const result = paymentZodSchema.parse({
+      amount: 50,
+      asset: "XLM",
+      recipient: "GRECIPIENT",
+      memo: "18446744073709551615",
+      memo_type: "return",
+    });
+    expect(result.memo).toBe("18446744073709551615");
+    expect(result.memo_type).toBe("return");
+  });
+
+  it("rejects a return memo that is neither valid id nor 64 hex characters", () => {
     expect(() =>
       paymentZodSchema.parse({
         amount: 50,
         asset: "XLM",
         recipient: "GRECIPIENT",
-        memo: "invalidhash",
-        memo_type: "hash",
+        memo: "tooshort",
+        memo_type: "return",
       })
-    ).toThrowError("Invalid hash memo: must be exactly 64 hexadecimal characters");
+    ).toThrowError(
+      "memo must be a valid unsigned 64-bit integer or a 32-byte hex string (64 characters) when memo_type is return"
+    );
   });
 
-  it("accepts valid hash memo", () => {
-    const validHash = "a".repeat(64);
+  it("accepts a valid hash memo (32-byte hex)", () => {
+    const hash = "ab12cd34".repeat(8);
     const result = paymentZodSchema.parse({
       amount: 50,
       asset: "XLM",
       recipient: "GRECIPIENT",
-      memo: validHash,
+      memo: hash,
       memo_type: "hash",
     });
+    expect(result.memo).toBe(hash);
+  });
 
-    expect(result.memo).toBe(validHash);
-    expect(result.memo_type).toBe("hash");
+  it("rejects a hash memo that is not 64 hex characters", () => {
+    expect(() =>
+      paymentZodSchema.parse({
+        amount: 50,
+        asset: "XLM",
+        recipient: "GRECIPIENT",
+        memo: "xyz",
+        memo_type: "hash",
+      })
+    ).toThrowError("memo must be a 32-byte hex string (64 characters) when memo_type is hash");
+  });
+
+  it("accepts a valid id memo (unsigned 64-bit integer)", () => {
+    const result = paymentZodSchema.parse({
+      amount: 50,
+      asset: "XLM",
+      recipient: "GRECIPIENT",
+      memo: "12345678",
+      memo_type: "id",
+    });
+    expect(result.memo).toBe("12345678");
+  });
+
+  it("rejects a non-numeric id memo", () => {
+    expect(() =>
+      paymentZodSchema.parse({
+        amount: 50,
+        asset: "XLM",
+        recipient: "GRECIPIENT",
+        memo: "not-a-number",
+        memo_type: "id",
+      })
+    ).toThrowError("memo must be a valid unsigned 64-bit integer when memo_type is id");
   });
 
   it("rejects invalid amounts", () => {
@@ -181,6 +242,24 @@ describe("registerMerchantZodSchema", () => {
       })
     ).toThrowError("primary_color must be a valid hex color");
   });
+
+  it("accepts and passes through a metadata blob", () => {
+    const result = registerMerchantZodSchema.parse({
+      email: "merchant@example.com",
+      metadata: { industry: "retail", country: "NG" },
+    });
+
+    expect(result.metadata).toEqual({ industry: "retail", country: "NG" });
+  });
+
+  it("rejects metadata that is not a plain object", () => {
+    expect(() =>
+      registerMerchantZodSchema.parse({
+        email: "merchant@example.com",
+        metadata: "not-an-object",
+      })
+    ).toThrow();
+  });
 });
 
 describe("paymentSessionZodSchema", () => {
@@ -214,6 +293,41 @@ describe("paymentSessionZodSchema", () => {
         },
       })
     ).toThrowError("primary_color must be a valid hex color");
+  });
+});
+
+describe("v2PaymentSessionSchema", () => {
+  it("accepts a valid return memo as unsigned 64-bit integer", () => {
+    const result = v2PaymentSessionSchema.parse({
+      amount: 10,
+      asset: "XLM",
+      destination_address: "GRECIPIENT",
+      memo: "18446744073709551615",
+      memo_type: "return",
+      branding_overrides: {
+        primary_color: "#abc",
+      },
+    });
+
+    expect(result.memo).toBe("18446744073709551615");
+    expect(result.memo_type).toBe("return");
+  });
+
+  it("rejects invalid return memo that is neither uint64 id nor 64-char hash", () => {
+    expect(() =>
+      v2PaymentSessionSchema.parse({
+        amount: 10,
+        asset: "XLM",
+        destination_address: "GRECIPIENT",
+        memo: "bad-return-memo",
+        memo_type: "return",
+        branding_overrides: {
+          primary_color: "#abc",
+        },
+      })
+    ).toThrowError(
+      "memo must be a valid unsigned 64-bit integer or a 32-byte hex string (64 characters) when memo_type is return"
+    );
   });
 });
 
