@@ -4,6 +4,7 @@ import rateLimit from "express-rate-limit";
 import { randomUUID } from "node:crypto";
 import {
   findMatchingPayment,
+  findStrictReceivePaths,
   createRefundTransaction,
 } from "../lib/stellar.js";
 import { supabase } from "../lib/supabase.js";
@@ -801,410 +802,123 @@ function createPaymentsRouter({
     },
   );
 
-
-  /**
-   * Fetches the anchor's stellar.toml and extracts its SEP-0024 transfer server URL.
-   * Every SEP-compliant anchor publishes this at /.well-known/stellar.toml
-   *
-   * @param {string} anchorDomain - e.g. "testanchor.stellar.org"
-   * @returns {Promise<string>} - The TRANSFER_SERVER_SEP0024 URL
-   */
-  async function fetchAnchorToml(anchorDomain) {
-    const tomlUrl = `https://${anchorDomain}/.well-known/stellar.toml`;
-    const response = await fetch(tomlUrl);
-
-    if (!response.ok) {
-      throw Object.assign(
-        new Error(`Failed to fetch anchor TOML from ${tomlUrl}`),
-        { status: 502 }
-      );
-    }
-
-    const text = await response.text();
-
-    // Parse TRANSFER_SERVER_SEP0024 from the TOML file
-    // Example line: TRANSFER_SERVER_SEP0024 = "https://sep24.circle.com/sep24"
-    const match = text.match(/TRANSFER_SERVER_SEP0024\s*=\s*"([^"]+)"/);
-    if (!match) {
-      throw Object.assign(
-        new Error(
-          `Anchor TOML at ${tomlUrl} is missing TRANSFER_SERVER_SEP0024`
-        ),
-        { status: 502 }
-      );
-    }
-
-    return match[1]; // The base URL of the anchor's SEP-0024 API
-  }
-
   /**
    * @swagger
-   * /api/anchor/sep24/deposit:
-   *   post:
-   *     summary: Initiate a SEP-0024 hosted deposit (fiat → Stellar token)
-   *     description: >
-   *       Starts an interactive deposit flow with a Stellar anchor (e.g. Circle,
-   *       MoneyGram). Returns a URL the frontend should open in a popup — the anchor
-   *       hosts the deposit form, so no bank details are ever sent to this API.
-   *     tags: [Anchor / SEP-0024]
-   *     security:
-   *       - ApiKeyAuth: []
-   *     requestBody:
-   *       required: true
-   *       content:
-   *         application/json:
-   *           schema:
-   *             type: object
-   *             required: [asset_code, account]
-   *             properties:
-   *               asset_code:
-   *                 type: string
-   *                 description: Stellar asset code to deposit (e.g. USDC, EURC)
-   *                 example: USDC
-   *               account:
-   *                 type: string
-   *                 description: User's Stellar public key that will receive the tokens
-   *               amount:
-   *                 type: number
-   *                 description: Optional pre-fill amount for the deposit form
-   *               anchor_domain:
-   *                 type: string
-   *                 description: Anchor domain override (defaults to ANCHOR_DOMAIN env var)
-   *                 example: testanchor.stellar.org
-   *     responses:
-   *       200:
-   *         description: Interactive deposit URL from the anchor
-   *         content:
-   *           application/json:
-   *             schema:
-   *               type: object
-   *               properties:
-   *                 type:
-   *                   type: string
-   *                   example: interactive_customer_info_needed
-   *                 url:
-   *                   type: string
-   *                   description: Open this URL in a popup for the user to complete the deposit
-   *                 id:
-   *                   type: string
-   *                   description: Anchor transaction ID — use this to poll /anchor/sep24/transaction/:id
-   *                 anchor_domain:
-   *                   type: string
-   *       400:
-   *         description: Missing required fields
-   *       500:
-   *         description: ANCHOR_DOMAIN not configured
-   *       502:
-   *         description: Anchor request failed
-   */
-  router.post("/anchor/sep24/deposit", async (req, res, next) => {
-    try {
-      const { asset_code, account, amount, anchor_domain } = req.body;
-
-      if (!asset_code || !account) {
-        return res.status(400).json({
-          error: "asset_code and account are required",
-        });
-      }
-
-      const domain = anchor_domain || process.env.ANCHOR_DOMAIN;
-      if (!domain) {
-        return res.status(500).json({
-          error:
-            "No anchor domain configured. Set ANCHOR_DOMAIN in your .env file (e.g. testanchor.stellar.org)",
-        });
-      }
-
-      // Step 1: Read the anchor's TOML to get its SEP-0024 server URL
-      const transferServer = await fetchAnchorToml(domain);
-
-      // Step 2: Call the anchor's deposit endpoint
-      // The anchor returns a URL for the user to open — we never see bank details
-      const anchorRes = await fetch(
-        `${transferServer}/transactions/deposit/interactive`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            // If your anchor requires a JWT bearer token, add it here:
-            // "Authorization": `Bearer ${your_sep10_jwt}`,
-          },
-          body: JSON.stringify({
-            asset_code,
-            account,
-            ...(amount !== undefined && { amount: String(amount) }),
-          }),
-        }
-      );
-
-      if (!anchorRes.ok) {
-        const errBody = await anchorRes.text();
-        return res.status(502).json({
-          error: "Anchor rejected the deposit request",
-          anchor_status: anchorRes.status,
-          detail: errBody,
-        });
-      }
-
-      const anchorData = await anchorRes.json();
-
-      // anchorData shape (SEP-0024 spec):
-      // {
-      //   type: "interactive_customer_info_needed",
-      //   url:  "https://anchor.example.com/sep24/transactions/deposit?token=...",
-      //   id:   "2cb4c100-a1e2-4273-9b2c-abc123"
-      // }
-      res.json({
-        type: anchorData.type,
-        url: anchorData.url,           // Frontend opens this in a popup
-        id: anchorData.id,             // Poll this with GET /anchor/sep24/transaction/:id
-        anchor_domain: domain,
-      });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  /**
-   * @swagger
-   * /api/anchor/sep24/withdraw:
-   *   post:
-   *     summary: Initiate a SEP-0024 hosted withdrawal (Stellar token → fiat)
-   *     description: >
-   *       Starts an interactive withdrawal flow with a Stellar anchor. Returns a URL
-   *       the frontend opens in a popup where the user enters their bank/cash-out details.
-   *     tags: [Anchor / SEP-0024]
-   *     security:
-   *       - ApiKeyAuth: []
-   *     requestBody:
-   *       required: true
-   *       content:
-   *         application/json:
-   *           schema:
-   *             type: object
-   *             required: [asset_code, account]
-   *             properties:
-   *               asset_code:
-   *                 type: string
-   *                 description: Stellar asset code to withdraw (e.g. USDC, EURC)
-   *                 example: USDC
-   *               account:
-   *                 type: string
-   *                 description: User's Stellar public key that holds the tokens
-   *               amount:
-   *                 type: number
-   *                 description: Optional pre-fill amount for the withdrawal form
-   *               anchor_domain:
-   *                 type: string
-   *                 description: Anchor domain override (defaults to ANCHOR_DOMAIN env var)
-   *     responses:
-   *       200:
-   *         description: Interactive withdrawal URL from the anchor
-   *         content:
-   *           application/json:
-   *             schema:
-   *               type: object
-   *               properties:
-   *                 type:
-   *                   type: string
-   *                   example: interactive_customer_info_needed
-   *                 url:
-   *                   type: string
-   *                   description: Open this URL in a popup for the user to complete the withdrawal
-   *                 id:
-   *                   type: string
-   *                   description: Anchor transaction ID for polling
-   *                 anchor_domain:
-   *                   type: string
-   *       400:
-   *         description: Missing required fields
-   *       500:
-   *         description: ANCHOR_DOMAIN not configured
-   *       502:
-   *         description: Anchor request failed
-   */
-  router.post("/anchor/sep24/withdraw", async (req, res, next) => {
-    try {
-      const { asset_code, account, amount, anchor_domain } = req.body;
-
-      if (!asset_code || !account) {
-        return res.status(400).json({
-          error: "asset_code and account are required",
-        });
-      }
-
-      const domain = anchor_domain || process.env.ANCHOR_DOMAIN;
-      if (!domain) {
-        return res.status(500).json({
-          error:
-            "No anchor domain configured. Set ANCHOR_DOMAIN in your .env file (e.g. testanchor.stellar.org)",
-        });
-      }
-
-      // Step 1: Discover the anchor's SEP-0024 server from its TOML
-      const transferServer = await fetchAnchorToml(domain);
-
-      // Step 2: Call the anchor's withdrawal endpoint
-      const anchorRes = await fetch(
-        `${transferServer}/transactions/withdraw/interactive`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            // "Authorization": `Bearer ${your_sep10_jwt}`,
-          },
-          body: JSON.stringify({
-            asset_code,
-            account,
-            ...(amount !== undefined && { amount: String(amount) }),
-          }),
-        }
-      );
-
-      if (!anchorRes.ok) {
-        const errBody = await anchorRes.text();
-        return res.status(502).json({
-          error: "Anchor rejected the withdrawal request",
-          anchor_status: anchorRes.status,
-          detail: errBody,
-        });
-      }
-
-      const anchorData = await anchorRes.json();
-
-      res.json({
-        type: anchorData.type,
-        url: anchorData.url,           // Frontend opens this in a popup
-        id: anchorData.id,             // Poll this with GET /anchor/sep24/transaction/:id
-        anchor_domain: domain,
-      });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  /**
-   * @swagger
-   * /api/anchor/sep24/transaction/{id}:
+   * /api/path-payment-quote/{id}:
    *   get:
-   *     summary: Poll the status of a SEP-0024 anchor transaction
-   *     description: >
-   *       Fetches the current status of a deposit or withdrawal transaction from
-   *       the anchor. Call this repeatedly after the user closes the popup to check
-   *       whether the transaction has completed.
-   *     tags: [Anchor / SEP-0024]
-   *     security:
-   *       - ApiKeyAuth: []
+   *     summary: Get a path payment quote for a payment session
+   *     description: Returns the estimated send amount if the customer wants to pay with a different asset than the merchant expects.
+   *     tags: [Payments]
    *     parameters:
    *       - in: path
    *         name: id
    *         required: true
    *         schema:
    *           type: string
-   *         description: Anchor transaction ID returned from /deposit or /withdraw
+   *         description: Payment ID
    *       - in: query
-   *         name: anchor_domain
+   *         name: source_asset
+   *         required: true
    *         schema:
    *           type: string
-   *         description: Anchor domain override (defaults to ANCHOR_DOMAIN env var)
+   *         description: Asset code the customer wants to send (e.g. XLM)
+   *       - in: query
+   *         name: source_asset_issuer
+   *         schema:
+   *           type: string
+   *         description: Issuer of the source asset (required if not XLM)
+   *       - in: query
+   *         name: source_account
+   *         required: true
+   *         schema:
+   *           type: string
+   *         description: Customer's Stellar public key
    *     responses:
    *       200:
-   *         description: Transaction object from the anchor
-   *         content:
-   *           application/json:
-   *             schema:
-   *               type: object
-   *               properties:
-   *                 transaction:
-   *                   type: object
-   *                   properties:
-   *                     id:
-   *                       type: string
-   *                     status:
-   *                       type: string
-   *                       description: >
-   *                         One of: incomplete, pending_user_transfer_start,
-   *                         pending_anchor, pending_stellar, completed, error
-   *                     amount_in:
-   *                       type: string
-   *                     amount_out:
-   *                       type: string
-   *                     stellar_transaction_id:
-   *                       type: string
-   *                     more_info_url:
-   *                       type: string
+   *         description: Path payment quote
    *       400:
-   *         description: Missing transaction ID
-   *       500:
-   *         description: ANCHOR_DOMAIN not configured
-   *       502:
-   *         description: Anchor request failed
+   *         description: Missing parameters or same asset
+   *       404:
+   *         description: Payment not found or no path available
    */
-  router.get("/anchor/sep24/transaction/:id", async (req, res, next) => {
-    try {
-      const { id } = req.params;
+  router.get(
+    "/path-payment-quote/:id",
+    validateUuidParam(),
+    async (req, res, next) => {
+      try {
+        const sourceAsset = req.query.source_asset;
+        const sourceAssetIssuer = req.query.source_asset_issuer || null;
+        const sourceAccount = req.query.source_account;
 
-      if (!id) {
-        return res.status(400).json({ error: "Transaction ID is required" });
-      }
-
-      const domain = req.query.anchor_domain || process.env.ANCHOR_DOMAIN;
-      if (!domain) {
-        return res.status(500).json({
-          error:
-            "No anchor domain configured. Set ANCHOR_DOMAIN in your .env file",
-        });
-      }
-
-      // Discover the anchor's SEP-0024 server
-      const transferServer = await fetchAnchorToml(domain);
-
-      // Fetch the transaction status from the anchor
-      const anchorRes = await fetch(
-        `${transferServer}/transaction?id=${encodeURIComponent(id)}`,
-        {
-          headers: {
-            // "Authorization": `Bearer ${your_sep10_jwt}`,
-          },
+        if (!sourceAsset || !sourceAccount) {
+          return res.status(400).json({
+            error: "source_asset and source_account query parameters are required",
+          });
         }
-      );
 
-      if (!anchorRes.ok) {
-        return res.status(502).json({
-          error: "Failed to fetch transaction status from anchor",
-          anchor_status: anchorRes.status,
+        const { data, error } = await supabase
+          .from("payments")
+          .select("id, amount, asset, asset_issuer, recipient, status")
+          .eq("id", req.params.id)
+          .maybeSingle();
+
+        if (error) {
+          error.status = 500;
+          throw error;
+        }
+
+        if (!data) {
+          return res.status(404).json({ error: "Payment not found" });
+        }
+
+        // No quote needed if customer is already paying with the right asset
+        const sameAsset =
+          sourceAsset.toUpperCase() === data.asset.toUpperCase() &&
+          (sourceAssetIssuer || null) === (data.asset_issuer || null);
+
+        if (sameAsset) {
+          return res.status(400).json({
+            error: "Source asset is the same as destination asset. Use a direct payment.",
+          });
+        }
+
+        const SLIPPAGE = 0.01; // 1%
+
+        const quote = await findStrictReceivePaths({
+          sourceAccount,
+          destAssetCode: data.asset,
+          destAssetIssuer: data.asset_issuer,
+          destAmount: String(data.amount),
+          sourceAssetCode: sourceAsset,
+          sourceAssetIssuer,
         });
+
+        if (!quote) {
+          return res.status(404).json({
+            error: "No path found for this asset pair",
+          });
+        }
+
+        const sendMax = (
+          parseFloat(quote.source_amount) * (1 + SLIPPAGE)
+        ).toFixed(7);
+
+        res.json({
+          source_asset: quote.source_asset_code,
+          source_asset_issuer: quote.source_asset_issuer,
+          source_amount: quote.source_amount,
+          send_max: sendMax,
+          destination_asset: data.asset,
+          destination_asset_issuer: data.asset_issuer,
+          destination_amount: String(data.amount),
+          path: quote.path,
+          slippage: SLIPPAGE,
+        });
+      } catch (err) {
+        next(err);
       }
-
-      const data = await anchorRes.json();
-
-      // Anchor response shape (SEP-0024 spec):
-      // {
-      //   transaction: {
-      //     id:                     "2cb4c100-...",
-      //     kind:                   "deposit",
-      //     status:                 "completed",   ← watch this field
-      //     amount_in:              "100.00",
-      //     amount_out:             "99.50",
-      //     amount_fee:             "0.50",
-      //     stellar_transaction_id: "abc123...",   ← on-chain tx hash when done
-      //     more_info_url:          "https://..."
-      //   }
-      // }
-      //
-      // Possible status values:
-      //   incomplete                  — user hasn't finished the popup form yet
-      //   pending_user_transfer_start — waiting for user to send Stellar tokens (withdraw only)
-      //   pending_anchor              — anchor is processing
-      //   pending_stellar             — anchor is waiting for Stellar confirmation
-      //   completed                   — done, tokens delivered
-      //   error                       — something went wrong on the anchor's side
-
-      res.json(data);
-    } catch (err) {
-      next(err);
-    }
-  });
+    },
+  );
 
   return router;
 }

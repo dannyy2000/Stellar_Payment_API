@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import CopyButton from "@/components/CopyButton";
+import MaskedValue from "@/components/MaskedValue";
 import toast from "react-hot-toast";
 import {
   useHydrateMerchantStore,
@@ -66,55 +66,6 @@ function contrastRatio(foregroundHex: string, backgroundHex: string) {
   const darker = Math.min(l1, l2);
 
   return (brighter + 0.05) / (darker + 0.05);
-}
-
-// ─── Eye icon (show / hide key) ──────────────────────────────────────────────
-
-function EyeIcon({ open }: { open: boolean }) {
-  return open ? (
-    <svg
-      viewBox="0 0 24 24"
-      className="h-4 w-4"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-    >
-      <path
-        d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <circle
-        cx="12"
-        cy="12"
-        r="3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  ) : (
-    <svg
-      viewBox="0 0 24 24"
-      className="h-4 w-4"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-    >
-      <path
-        d="M17.94 17.94A10.1 10.1 0 0 1 12 19c-6.4 0-10-7-10-7a18.1 18.1 0 0 1 5.06-5.94M9.9 4.24A9.1 9.1 0 0 1 12 4c6.4 0 10 7 10 7a18.1 18.1 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <line x1="1" y1="1" x2="23" y2="23" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-// ─── Masked key display ───────────────────────────────────────────────────────
-
-function mask(key: string) {
-  if (key.length <= 12) return "•".repeat(key.length);
-  return key.slice(0, 7) + "•".repeat(key.length - 13) + key.slice(-6);
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
@@ -399,7 +350,6 @@ export default function SettingsPage() {
     );
   }
 
-  const displayKey = revealed ? apiKey : mask(apiKey);
   const primaryOnBackground = contrastRatio(
     branding.primary_color,
     branding.background_color,
@@ -476,39 +426,20 @@ export default function SettingsPage() {
 
         {activeTab === "api" ? <div className="flex flex-col gap-8">
           {/* API Key section */}
-          <section className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                API Key
-              </h2>
-              <button
-                type="button"
-                onClick={() => setRevealed((v) => !v)}
-                aria-label={revealed ? "Hide API key" : "Reveal API key"}
-                className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-slate-400 transition-colors hover:bg-white/5 hover:text-white"
-              >
-                <EyeIcon open={revealed} />
-                {revealed ? "Hide" : "Reveal"}
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2 overflow-hidden rounded-xl border border-white/10 bg-black/40 p-1 pl-4">
-              <code
-                className={`flex-1 truncate font-mono text-sm transition-colors ${
-                  revealed ? "text-mint" : "text-slate-500"
-                }`}
-              >
-                {displayKey}
-              </code>
-              {/* Only allow copying when revealed to prevent accidental exposure */}
-              {revealed && <CopyButton text={apiKey} />}
-            </div>
-
-            <p className="text-[11px] text-slate-600">
-              Pass this as the <code className="text-slate-500">x-api-key</code>{" "}
-              header on every API request.
-            </p>
-          </section>
+          <MaskedValue
+            label="API Key"
+            value={apiKey}
+            revealed={revealed}
+            onRevealedChange={setRevealed}
+            copyText={apiKey}
+            helperText={(
+              <>
+                Pass this as the{" "}
+                <code className="text-slate-500">x-api-key</code>{" "}
+                header on every API request.
+              </>
+            )}
+          />
 
           {/* Divider */}
           <div className="h-px bg-white/10" />

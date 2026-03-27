@@ -197,15 +197,25 @@ export default function PaymentPage() {
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [walletReady, setWalletReady] = useState(false);
   const [showRawIntent, setShowRawIntent] = useState(false);
 
-  const { activeProvider } = useWallet();
-  const { isProcessing, status: txStatus, error: paymentError, processPayment } = usePayment(activeProvider);
+  // Path payment state
+  const [usePathPayment, setUsePathPayment] = useState(false);
+  const [pathQuote, setPathQuote] = useState<{
+    source_asset: string;
+    source_asset_issuer: string | null;
+    source_amount: string;
+    send_max: string;
+    destination_asset: string;
+    destination_amount: string;
+    path: Array<{ asset_code: string; asset_issuer: string | null }>;
+    slippage: number;
+  } | null>(null);
+  const [pathQuoteLoading, setPathQuoteLoading] = useState(false);
+  const [pathQuoteError, setPathQuoteError] = useState<string | null>(null);
 
-  const networkPassphrase =
-    process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE ||
-    "Test SDF Network ; September 2015";
+  const { activeProvider } = useWallet();
+  const { isProcessing, status: txStatus, error: paymentError, processPayment, processPathPayment } = usePayment(activeProvider);
 
   // ── Fetch payment details ──────────────────────────────────────────────────
   useEffect(() => {
@@ -250,10 +260,38 @@ export default function PaymentPage() {
     return () => clearInterval(id);
   }, [paymentId, payment, loading]);
 
-  // ── Wallet readiness ───────────────────────────────────────────────────────
+  // ── Fetch path payment quote when wallet is connected ────────────────────
   useEffect(() => {
-    setWalletReady(!!activeProvider);
-  }, [activeProvider]);
+    if (!payment || !activeProvider || payment.status !== "pending") return;
+
+    let cancelled = false;
+    (async () => {
+      setPathQuoteLoading(true);
+      setPathQuoteError(null);
+      try {
+        const pubKey = await activeProvider.getPublicKey();
+        const qs = new URLSearchParams({
+          source_asset: "XLM",
+          source_asset_issuer: "",
+          source_account: pubKey,
+        });
+        const res = await fetch(
+          `${API_URL}/api/path-payment-quote/${paymentId}?${qs}`,
+        );
+        if (!res.ok) {
+          setPathQuote(null);
+          return;
+        }
+        const data = await res.json();
+        if (!cancelled) setPathQuote(data);
+      } catch {
+        if (!cancelled) setPathQuoteError("Could not fetch path payment quote.");
+      } finally {
+        if (!cancelled) setPathQuoteLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [payment, activeProvider, paymentId]);
 
   // ── Pay handler ───────────────────────────────────────────────────────────
   const handlePay = async () => {
@@ -261,12 +299,27 @@ export default function PaymentPage() {
     setActionError(null);
 
     try {
-      const result = await processPayment({
-        recipient: payment.recipient,
-        amount: String(payment.amount),
-        assetCode: payment.asset,
-        assetIssuer: payment.asset_issuer,
-      });
+      let result: { hash: string };
+
+      if (usePathPayment && pathQuote) {
+        result = await processPathPayment({
+          recipient: payment.recipient,
+          destAmount: pathQuote.destination_amount,
+          destAssetCode: pathQuote.destination_asset,
+          destAssetIssuer: payment.asset_issuer,
+          sendMax: pathQuote.send_max,
+          sendAssetCode: pathQuote.source_asset,
+          sendAssetIssuer: pathQuote.source_asset_issuer,
+          path: pathQuote.path,
+        });
+      } else {
+        result = await processPayment({
+          recipient: payment.recipient,
+          amount: String(payment.amount),
+          assetCode: payment.asset,
+          assetIssuer: payment.asset_issuer,
+        });
+      }
 
       setPayment({ ...payment, status: "completed", tx_id: result.hash });
       toast.success(t("paymentSent"));
@@ -470,16 +523,39 @@ export default function PaymentPage() {
             {/* ── CTA section ── */}
             {!isSettled && !isFailed && (
               <div className="flex flex-col gap-3 pt-2">
-                {walletReady ? (
+                {activeProvider ? (
                   <>
                     <p className="text-center text-xs text-slate-500">
                       {t("connectedVia", { provider: activeProvider?.name ?? "" })}
                     </p>
+                    {/* Path payment toggle */}
+                    {pathQuote && !pathQuoteLoading && (
+                      <label className="flex items-center gap-3 rounded-xl border border-white/10 bg-black/30 px-4 py-3 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={usePathPayment}
+                          onChange={(e) => setUsePathPayment(e.target.checked)}
+                          className="h-4 w-4 accent-[var(--checkout-primary)]"
+                        />
+                        <span className="text-sm text-slate-300">
+                          Pay with <span className="font-semibold text-white">{pathQuote.send_max} {pathQuote.source_asset}</span> instead
+                        </span>
+                      </label>
+                    )}
+                    {pathQuoteLoading && (
+                      <p className="text-center text-xs text-slate-500">Checking alternative payment paths…</p>
+                    )}
+                    {pathQuoteError && (
+                      <p className="text-center text-xs text-red-400">{pathQuoteError}</p>
+                    )}
                     <button
                       type="button"
                       onClick={handlePay}
                       disabled={isProcessing}
-                      className="group relative flex h-12 w-full items-center justify-center rounded-xl bg-mint font-bold text-black transition-all hover:bg-glow disabled:cursor-not-allowed disabled:opacity-50"
+                      className="group relative flex h-12 w-full items-center justify-center rounded-xl font-bold text-black transition-all disabled:cursor-not-allowed disabled:opacity-50"
+                      style={{
+                        backgroundColor: "var(--checkout-primary)",
+                      }}
                     >
                       {isProcessing ? (
                         <span className="flex items-center gap-2">
@@ -489,18 +565,26 @@ export default function PaymentPage() {
                           </svg>
                           {t("processing")}
                         </span>
+                      ) : usePathPayment && pathQuote ? (
+                        `Pay ${pathQuote.send_max} ${pathQuote.source_asset}`
                       ) : (
                         activeProvider?.name
                           ? t("payWith", { provider: activeProvider.name })
                           : t("payWithFallback")
                       )}
-                      <div className="absolute inset-0 -z-10 bg-mint/20 opacity-0 blur-xl transition-opacity group-hover:opacity-100" />
+                      <div
+                        className="absolute inset-0 -z-10 opacity-0 blur-xl transition-opacity group-hover:opacity-100"
+                        style={{ backgroundColor: "color-mix(in srgb, var(--checkout-primary) 20%, transparent)" }}
+                      />
                     </button>
                   </>
                 ) : (
                   <WalletSelector
-                    networkPassphrase={networkPassphrase}
-                    onConnected={() => setWalletReady(true)}
+                    networkPassphrase={
+                      process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE ??
+                      "Test SDF Network ; September 2015"
+                    }
+                    onConnected={() => {}}
                   />
                 )}
               </div>

@@ -131,6 +131,57 @@ async function isMultiSigAccount(accountId) {
   }
 }
 
+/**
+ * Query Horizon for strict-receive paths.
+ * Returns the best path the sender can use to deliver `destAmount` of the
+ * destination asset, sending from `sourceAsset`.
+ *
+ * @param {object} opts
+ * @param {string} opts.sourceAccount   — Stellar public key of the sender
+ * @param {string} opts.destAssetCode   — Asset code the merchant wants to receive
+ * @param {string|null} opts.destAssetIssuer — Issuer (null for XLM)
+ * @param {string} opts.destAmount      — Amount the merchant must receive
+ * @param {string} opts.sourceAssetCode — Asset code the customer wants to send
+ * @param {string|null} opts.sourceAssetIssuer — Issuer (null for XLM)
+ * @returns {Promise<{source_amount: string, path: Array}>}
+ */
+export async function findStrictReceivePaths({
+  sourceAccount,
+  destAssetCode,
+  destAssetIssuer,
+  destAmount,
+  sourceAssetCode,
+  sourceAssetIssuer,
+}) {
+  const destAsset = resolveAsset(destAssetCode, destAssetIssuer);
+  const sourceAsset = resolveAsset(sourceAssetCode, sourceAssetIssuer);
+
+  try {
+    const result = await server
+      .strictReceivePaths([sourceAsset], destAsset, destAmount)
+      .call();
+
+    if (!result.records || result.records.length === 0) {
+      return null;
+    }
+
+    // Return the best (first) path
+    const best = result.records[0];
+    return {
+      source_amount: best.source_amount,
+      source_asset_code: best.source_asset_type === "native" ? "XLM" : best.source_asset_code,
+      source_asset_issuer: best.source_asset_issuer || null,
+      destination_amount: best.destination_amount,
+      path: best.path.map((p) => ({
+        asset_code: p.asset_type === "native" ? "XLM" : p.asset_code,
+        asset_issuer: p.asset_issuer || null,
+      })),
+    };
+  } catch (err) {
+    throw handleHorizonError(err, "strict-receive-paths");
+  }
+}
+
 export async function findMatchingPayment({
   recipient,
   amount,
@@ -157,10 +208,15 @@ export async function findMatchingPayment({
   const isMultiSig = await isMultiSigAccount(recipient);
 
   for (const payment of page.records) {
-    if (payment.type !== "payment") {
+    const isDirectPayment = payment.type === "payment";
+    const isPathPayment = payment.type === "path_payment_strict_receive";
+
+    if (!isDirectPayment && !isPathPayment) {
       continue;
     }
 
+    // For path payments, verify the *received* asset and amount
+    // (the destination gets exactly what the merchant asked for)
     if (!paymentMatchesAsset(payment, asset)) {
       continue;
     }
