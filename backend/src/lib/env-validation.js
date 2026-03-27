@@ -14,7 +14,10 @@ function validateEnvironmentVariables() {
     missing.forEach(key => {
       console.error(`   - ${key}`);
     });
-    console.error('\nPlease set these variables in your .env file or environment.');
+    console.error('\nCreate your local env file before starting the API:');
+    console.error('   cp .env.example .env');
+    console.error('Then fill in the required values in backend/.env.');
+    console.error('Setup guide: README.md#quick-start-backend');
     process.exit(1);
   }
 

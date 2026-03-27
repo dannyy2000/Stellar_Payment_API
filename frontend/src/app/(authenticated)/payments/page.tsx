@@ -5,6 +5,7 @@ import RecentPayments from "@/components/RecentPayments";
 import Skeleton, { SkeletonTheme } from "react-loading-skeleton";
 import "react-loading-skeleton/dist/skeleton.css";
 import { useMerchantHydrated, useHydrateMerchantStore } from "@/lib/merchant-store";
+import { useTranslations } from "next-intl";
 
 function PaymentsSkeleton() {
   return (
@@ -54,6 +55,7 @@ function PaymentsSkeleton() {
 }
 
 export default function PaymentsPage() {
+  const t = useTranslations("paymentsPage");
   const hydrated = useMerchantHydrated();
   const [loading, setLoading] = useState(true);
 
@@ -73,9 +75,9 @@ export default function PaymentsPage() {
   return (
     <div className="flex flex-col gap-8 animate-in fade-in duration-500">
       <div>
-        <h1 className="text-3xl font-bold text-white">Payment History</h1>
+        <h1 className="text-3xl font-bold text-white">{t("title")}</h1>
         <p className="mt-2 text-slate-400">
-          Monitor all incoming transactions and their verification status.
+          {t("description")}
         </p>
       </div>
       <RecentPayments showSkeleton={loading} />

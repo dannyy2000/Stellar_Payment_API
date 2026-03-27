@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import { recordMerchantApiUsage } from "./api-usage.js";
 
 const SALT_ROUNDS = 12;
 
@@ -21,7 +22,10 @@ export async function verifyPassword(plaintext, hash) {
   return bcrypt.compare(plaintext, hash);
 }
 
-export function createApiKeyAuth({ supabaseClient = null } = {}) {
+export function createApiKeyAuth({
+  supabaseClient = null,
+  usageRecorder = recordMerchantApiUsage,
+} = {}) {
   return async function requireApiKeyAuth(req, res, next) {
     try {
       const client = supabaseClient || (await import("./supabase.js")).supabase;
@@ -50,6 +54,17 @@ export function createApiKeyAuth({ supabaseClient = null } = {}) {
       }
 
       req.merchant = merchant;
+
+      try {
+        await usageRecorder({
+          merchantId: merchant.id,
+          req,
+        });
+      } catch (usageError) {
+        // Usage metrics should never block API traffic.
+        console.warn("Failed to record merchant API usage:", usageError.message);
+      }
+
       next();
     } catch (err) {
       next(err);

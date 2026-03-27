@@ -2,6 +2,8 @@ import express from "express";
 import { randomBytes } from "crypto";
 import { z } from "zod";
 import { supabase } from "../lib/supabase.js";
+import { requireApiKeyAuth } from "../lib/auth.js";
+import { getMerchantApiUsage } from "../lib/api-usage.js";
 import {
   merchantProfileUpdateZodSchema,
   registerMerchantZodSchema,
@@ -525,101 +527,46 @@ router.put("/merchant-limits", async (req, res, next) => {
   }
 });
 
-// Stellar public keys start with 'G' and are 56 characters long.
-const stellarAddressSchema = z
-  .string()
-  .trim()
-  .refine(
-    (v) => v.startsWith("G") && v.length === 56,
-    "Each issuer must be a valid Stellar public key (starts with 'G', 56 characters)"
-  );
-
-const allowedIssuersSchema = z.array(stellarAddressSchema);
-
 /**
  * @swagger
- * /api/merchant-issuers:
+ * /api/merchants/usage:
  *   get:
- *     summary: Get the allowed issuers list for the authenticated merchant
+ *     summary: Get API usage metrics for the authenticated merchant
  *     tags: [Merchants]
  *     security:
  *       - ApiKeyAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: month
+ *         required: false
+ *         schema:
+ *           type: string
+ *           pattern: '^\\d{4}-(0[1-9]|1[0-2])$'
+ *         description: Optional month in YYYY-MM format
  *     responses:
  *       200:
- *         description: Current allowed issuers list (empty array means all issuers accepted)
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 allowed_issuers:
- *                   type: array
- *                   items:
- *                     type: string
- */
-router.get("/merchant-issuers", async (req, res, next) => {
-  try {
-    const { data, error } = await supabase
-      .from("merchants")
-      .select("allowed_issuers")
-      .eq("id", req.merchant.id)
-      .maybeSingle();
-
-    if (error) {
-      error.status = 500;
-      throw error;
-    }
-
-    res.json({ allowed_issuers: data?.allowed_issuers ?? [] });
-  } catch (err) {
-    next(err);
-  }
-});
-
-/**
- * @swagger
- * /api/merchant-issuers:
- *   put:
- *     summary: Set the allowed issuers list for the authenticated merchant
- *     tags: [Merchants]
- *     security:
- *       - ApiKeyAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [allowed_issuers]
- *             properties:
- *               allowed_issuers:
- *                 type: array
- *                 items:
- *                   type: string
- *                 description: Array of trusted Stellar issuer public keys. Send an empty array to allow all issuers.
- *     responses:
- *       200:
- *         description: Updated allowed issuers list
+ *         description: Usage grouped by endpoint and month
  *       400:
- *         description: Validation error
+ *         description: Invalid month query parameter
+ *       401:
+ *         description: Missing or invalid API key
  */
-router.put("/merchant-issuers", async (req, res, next) => {
+router.get("/merchants/usage", requireApiKeyAuth(), async (req, res, next) => {
   try {
-    const body = z.object({ allowed_issuers: allowedIssuersSchema }).parse(req.body || {});
+    const month = typeof req.query?.month === "string" ? req.query.month : undefined;
 
-    const { data, error } = await supabase
-      .from("merchants")
-      .update({ allowed_issuers: body.allowed_issuers })
-      .eq("id", req.merchant.id)
-      .select("allowed_issuers")
-      .single();
-
-    if (error) {
-      error.status = 500;
-      throw error;
+    if (month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+      return res.status(400).json({
+        error: "month must be in YYYY-MM format",
+      });
     }
 
-    res.json({ allowed_issuers: data.allowed_issuers });
+    const usage = await getMerchantApiUsage({
+      merchantId: req.merchant.id,
+      month,
+    });
+
+    res.json(usage);
   } catch (err) {
     next(err);
   }

@@ -2,6 +2,7 @@
 
 import Sidebar from "@/components/Sidebar";
 import Breadcrumbs from "@/components/Breadcrumbs";
+import LocaleSwitcher from "@/components/LocaleSwitcher";
 import PaymentToastListener from "@/components/PaymentToastListener";
 import { motion } from "framer-motion";
 
@@ -21,7 +22,10 @@ export default function AuthenticatedLayout({
         <div className="mx-auto flex max-w-7xl flex-col p-6 lg:p-10">
           {/* Header with Breadcrumbs */}
           <header className="mb-10 flex flex-col gap-6">
-            <Breadcrumbs />
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <Breadcrumbs />
+              <LocaleSwitcher className="w-fit self-start sm:self-auto" />
+            </div>
             <div className="h-px w-full bg-gradient-to-r from-white/10 to-transparent" />
           </header>
 

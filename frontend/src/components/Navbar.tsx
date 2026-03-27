@@ -3,9 +3,11 @@
 import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useHydrateMerchantStore } from "@/lib/merchant-store";
 import MerchantProfileCard from "@/components/MerchantProfileCard";
 import ApiHealthBadge from "@/components/ApiHealthBadge";
+import LocaleSwitcher from "@/components/LocaleSwitcher";
 
 type AppNavLink = {
   href: string;
@@ -20,16 +22,18 @@ function isActive(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-const appNavLinks: AppNavLink[] = [
-  { href: "/", label: "Home" },
-  { href: "/login", label: "Login" },
-  { href: "/register", label: "Register" },
-];
-
 export default function Navbar() {
+  const t = useTranslations("nav");
   const pathname = usePathname();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
+
+  const appNavLinks: AppNavLink[] = [
+    { href: "/", label: t("home") },
+    { href: "/docs", label: t("docs") },
+    { href: "/login", label: t("login") },
+    { href: "/register", label: t("register") },
+  ];
 
   useHydrateMerchantStore();
 
@@ -83,7 +87,7 @@ export default function Navbar() {
               ref={triggerRef}
               onClick={toggleMenu}
               className="flex flex-col gap-1.5 md:hidden p-2 text-white"
-              aria-label="Toggle menu"
+              aria-label={t("toggleMenu")}
               aria-expanded={isMenuOpen}
               aria-controls="mobile-nav-menu"
             >
@@ -103,7 +107,9 @@ export default function Navbar() {
                 }`}
               ></span>
             </button>
+            <LocaleSwitcher className="hidden sm:inline-flex md:hidden" />
             <div className="hidden md:flex items-center gap-3">
+              <LocaleSwitcher />
               <ApiHealthBadge />
               <MerchantProfileCard />
             </div>
@@ -119,6 +125,7 @@ export default function Navbar() {
           <div className="mb-4 flex flex-col items-center justify-center gap-4">
             <MerchantProfileCard />
             <ApiHealthBadge />
+            <LocaleSwitcher />
           </div>
           <div className="flex flex-col gap-4">
             {appNavLinks.map((link) => (
