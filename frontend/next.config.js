@@ -1,7 +1,9 @@
 /** @type {import('next').NextConfig} */
 const path = require("path");
+const createNextIntlPlugin = require("next-intl/plugin");
 
 const withSentryConfig = (config) => config;
+const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
 const nextConfig = {
   reactStrictMode: true,
@@ -23,4 +25,6 @@ const sentryWebpackPluginOptions = {
   silent: true, // Suppresses all logs
 };
 
-module.exports = withSentryConfig(nextConfig, sentryWebpackPluginOptions);
+module.exports = withNextIntl(
+  withSentryConfig(nextConfig, sentryWebpackPluginOptions),
+);

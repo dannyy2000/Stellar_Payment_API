@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useLocale, useTranslations } from "next-intl";
 import PaymentDetailModal from "@/components/PaymentDetailModal";
 import {
   useHydrateMerchantStore,
@@ -9,6 +10,7 @@ import {
   useMerchantId,
 } from "@/lib/merchant-store";
 import { usePaymentSocket } from "@/lib/usePaymentSocket";
+import { localeToLanguageTag } from "@/i18n/config";
 
 interface Payment {
   id: string;
@@ -36,10 +38,19 @@ interface FilterState {
 }
 
 const LIMIT = 10;
-const STATUS_OPTIONS = ["all", "pending", "confirmed", "failed", "refunded"];
+const STATUS_OPTIONS = ["all", "pending", "confirmed", "failed", "refunded"] as const;
 const ASSET_OPTIONS = ["all", "XLM", "USDC"];
 
+function toStatusLabel(
+  t: ReturnType<typeof useTranslations>,
+  status: string,
+) {
+  return t.has(`statuses.${status}`) ? t(`statuses.${status}`) : status;
+}
+
 export default function RecentPayments() {
+  const t = useTranslations("recentPayments");
+  const locale = localeToLanguageTag(useLocale());
   const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +107,7 @@ export default function RecentPayments() {
     const fetchPayments = async () => {
       try {
         if (!apiKey) {
-          setError("API key not found. Please register or log in.");
+          setError(t("missingApiKey"));
           setLoading(false);
           return;
         }
@@ -126,9 +137,7 @@ export default function RecentPayments() {
           },
         );
 
-        if (!response.ok) {
-          throw new Error("Failed to fetch payments");
-        }
+        if (!response.ok) throw new Error(t("fetchFailed"));
 
         const data: PaginatedResponse = await response.json();
         setPayments(data.payments ?? []);
@@ -137,7 +146,7 @@ export default function RecentPayments() {
       } catch (err: unknown) {
         if (err instanceof Error && err.name === "AbortError") return;
         setError(
-          err instanceof Error ? err.message : "Failed to load payments",
+          err instanceof Error ? err.message : t("loadFailed"),
         );
       } finally {
         setLoading(false);
@@ -147,7 +156,7 @@ export default function RecentPayments() {
     fetchPayments();
 
     return () => controller.abort();
-  }, [apiKey, page, hydrated, filters]);
+  }, [apiKey, page, hydrated, filters, t]);
 
   const handleFilterChange = (key: keyof FilterState, value: string) => {
     setFilters((prev) => ({ ...prev, [key]: value }));
@@ -227,12 +236,11 @@ export default function RecentPayments() {
         <div className="space-y-4">
           <div className="space-y-2">
             <h3 className="text-lg font-semibold text-white">
-              Connection Error
+              {t("connectionError")}
             </h3>
             <p className="text-sm text-yellow-400">{error}</p>
             <p className="text-xs text-slate-500 max-w-md mx-auto">
-              Make sure the backend is running and the payments endpoint is
-              available.
+              {t("backendHint")}
             </p>
           </div>
 
@@ -254,7 +262,7 @@ export default function RecentPayments() {
                   d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
                 />
               </svg>
-              Retry Connection
+              {t("retryConnection")}
             </button>
 
             <button
@@ -274,7 +282,7 @@ export default function RecentPayments() {
                   d="M13 10V3L4 14h7v7l9-11h-7z"
                 />
               </svg>
-              Test Webhook Anyway
+              {t("testWebhook")}
             </button>
           </div>
 
@@ -283,11 +291,10 @@ export default function RecentPayments() {
               <div className="w-2 h-2 rounded-full bg-yellow-400 mt-1.5 flex-shrink-0" />
               <div className="text-left">
                 <p className="text-xs font-medium text-yellow-400">
-                  Troubleshooting Tip
+                  {t("troubleshootingTip")}
                 </p>
                 <p className="text-xs text-slate-500">
-                  You can still test webhook functionality while backend
-                  services are being restored.
+                  {t("troubleshootingDescription")}
                 </p>
               </div>
             </div>
@@ -323,11 +330,10 @@ export default function RecentPayments() {
         <div className="space-y-4">
           <div className="space-y-2">
             <h3 className="text-lg font-semibold text-white">
-              No payments yet
+              {t("emptyTitle")}
             </h3>
             <p className="text-sm text-slate-400 max-w-md mx-auto">
-              Start accepting payments by creating your first payment link or
-              testing webhooks to see transaction data flow.
+              {t("emptyDescription")}
             </p>
           </div>
 
@@ -349,7 +355,7 @@ export default function RecentPayments() {
                   d="M12 4v16m8-8H4"
                 />
               </svg>
-              Create Payment Link
+              {t("createPaymentLink")}
               <div className="absolute inset-0 -z-10 bg-mint/20 opacity-0 blur-xl transition-opacity group-hover:opacity-100" />
             </button>
 
@@ -370,7 +376,7 @@ export default function RecentPayments() {
                   d="M13 10V3L4 14h7v7l9-11h-7z"
                 />
               </svg>
-              Send Test Webhook
+              {t("sendTestWebhook")}
             </button>
           </div>
 
@@ -379,11 +385,10 @@ export default function RecentPayments() {
               <div className="w-2 h-2 rounded-full bg-mint mt-1.5 flex-shrink-0" />
               <div className="text-left space-y-1">
                 <p className="text-xs font-medium text-mint">
-                  Getting Started Guide
+                  {t("gettingStartedTitle")}
                 </p>
                 <p className="text-xs text-slate-400">
-                  Use webhook tools to test payment notifications and see
-                  real-time data appear in this dashboard.
+                  {t("gettingStartedDescription")}
                 </p>
               </div>
             </div>
@@ -401,7 +406,7 @@ export default function RecentPayments() {
           {/* Search Bar */}
           <div className="flex flex-col gap-2">
             <label htmlFor="search" className="text-xs font-medium uppercase tracking-wider text-slate-400">
-              Search
+              {t("search")}
             </label>
             <div className="relative">
               <input
@@ -409,7 +414,7 @@ export default function RecentPayments() {
                 type="text"
                 value={filters.search}
                 onChange={(e) => handleFilterChange("search", e.target.value)}
-                placeholder="Search by payment ID or description..."
+                placeholder={t("searchPlaceholder")}
                 className="w-full rounded-xl border border-white/10 bg-black/40 py-2.5 pl-10 pr-4 text-sm text-white placeholder:text-slate-600 focus:border-mint/50 focus:outline-none focus:ring-1 focus:ring-mint/50"
               />
               <svg
@@ -433,7 +438,7 @@ export default function RecentPayments() {
             {/* Status Filter */}
             <div className="flex flex-col gap-2">
               <label htmlFor="status" className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                Status
+                {t("status")}
               </label>
               <select
                 id="status"
@@ -443,7 +448,7 @@ export default function RecentPayments() {
               >
                 {STATUS_OPTIONS.map((status) => (
                   <option key={status} value={status}>
-                    {status === "all" ? "All Statuses" : status.charAt(0).toUpperCase() + status.slice(1)}
+                    {status === "all" ? t("allStatuses") : toStatusLabel(t, status)}
                   </option>
                 ))}
               </select>
@@ -452,7 +457,7 @@ export default function RecentPayments() {
             {/* Asset Filter */}
             <div className="flex flex-col gap-2">
               <label htmlFor="asset" className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                Asset
+                {t("asset")}
               </label>
               <select
                 id="asset"
@@ -462,7 +467,7 @@ export default function RecentPayments() {
               >
                 {ASSET_OPTIONS.map((asset) => (
                   <option key={asset} value={asset}>
-                    {asset === "all" ? "All Assets" : asset}
+                    {asset === "all" ? t("allAssets") : asset}
                   </option>
                 ))}
               </select>
@@ -471,7 +476,7 @@ export default function RecentPayments() {
             {/* Date From */}
             <div className="flex flex-col gap-2">
               <label htmlFor="dateFrom" className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                From Date
+                {t("fromDate")}
               </label>
               <input
                 id="dateFrom"
@@ -485,7 +490,7 @@ export default function RecentPayments() {
             {/* Date To */}
             <div className="flex flex-col gap-2">
               <label htmlFor="dateTo" className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                To Date
+                {t("toDate")}
               </label>
               <input
                 id="dateTo"
@@ -500,15 +505,15 @@ export default function RecentPayments() {
           {/* Filter Chips and Clear All */}
           {hasActiveFilters && (
             <div className="flex flex-wrap items-center gap-2 pt-2">
-              <span className="text-xs text-slate-400">Active filters:</span>
+              <span className="text-xs text-slate-400">{t("activeFilters")}</span>
               
               {filters.search && (
                 <span className="inline-flex items-center gap-1 rounded-full border border-mint/30 bg-mint/10 px-3 py-1 text-xs text-mint">
-                  Search: &quot;{filters.search}&quot;
+                  {t("searchChip", { value: filters.search })}
                   <button
                     onClick={() => clearFilter("search")}
                     className="ml-1 rounded-full p-0.5 hover:bg-mint/20"
-                    aria-label="Clear search filter"
+                    aria-label={t("clearSearchFilter")}
                   >
                     <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -519,11 +524,11 @@ export default function RecentPayments() {
 
               {filters.status !== "all" && (
                 <span className="inline-flex items-center gap-1 rounded-full border border-mint/30 bg-mint/10 px-3 py-1 text-xs text-mint">
-                  Status: {filters.status}
+                  {t("statusChip", { value: toStatusLabel(t, filters.status) })}
                   <button
                     onClick={() => clearFilter("status")}
                     className="ml-1 rounded-full p-0.5 hover:bg-mint/20"
-                    aria-label="Clear status filter"
+                    aria-label={t("clearStatusFilter")}
                   >
                     <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -534,11 +539,11 @@ export default function RecentPayments() {
 
               {filters.asset !== "all" && (
                 <span className="inline-flex items-center gap-1 rounded-full border border-mint/30 bg-mint/10 px-3 py-1 text-xs text-mint">
-                  Asset: {filters.asset}
+                  {t("assetChip", { value: filters.asset })}
                   <button
                     onClick={() => clearFilter("asset")}
                     className="ml-1 rounded-full p-0.5 hover:bg-mint/20"
-                    aria-label="Clear asset filter"
+                    aria-label={t("clearAssetFilter")}
                   >
                     <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -549,11 +554,11 @@ export default function RecentPayments() {
 
               {filters.dateFrom && (
                 <span className="inline-flex items-center gap-1 rounded-full border border-mint/30 bg-mint/10 px-3 py-1 text-xs text-mint">
-                  From: {filters.dateFrom}
+                  {t("fromChip", { value: filters.dateFrom })}
                   <button
                     onClick={() => clearFilter("dateFrom")}
                     className="ml-1 rounded-full p-0.5 hover:bg-mint/20"
-                    aria-label="Clear from date filter"
+                    aria-label={t("clearFromDateFilter")}
                   >
                     <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -564,11 +569,11 @@ export default function RecentPayments() {
 
               {filters.dateTo && (
                 <span className="inline-flex items-center gap-1 rounded-full border border-mint/30 bg-mint/10 px-3 py-1 text-xs text-mint">
-                  To: {filters.dateTo}
+                  {t("toChip", { value: filters.dateTo })}
                   <button
                     onClick={() => clearFilter("dateTo")}
                     className="ml-1 rounded-full p-0.5 hover:bg-mint/20"
-                    aria-label="Clear to date filter"
+                    aria-label={t("clearToDateFilter")}
                   >
                     <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -581,7 +586,7 @@ export default function RecentPayments() {
                 onClick={clearAllFilters}
                 className="ml-auto text-xs font-medium text-slate-400 underline underline-offset-4 hover:text-white"
               >
-                Clear all
+                {t("clearAll")}
               </button>
             </div>
           )}
@@ -591,8 +596,8 @@ export default function RecentPayments() {
       {/* Results count */}
       <div className="flex items-center justify-between">
         <p className="text-xs text-slate-400">
-          Showing {payments.length} of {totalCount} payments
-          {hasActiveFilters && ` (filtered from ${totalCount} total)`}
+          {t("showingResults", { shown: payments.length, total: totalCount })}
+          {hasActiveFilters ? ` ${t("filteredSuffix")}` : ""}
         </p>
       </div>
 
@@ -602,19 +607,19 @@ export default function RecentPayments() {
           <thead>
             <tr className="border-b border-white/10 bg-white/5">
               <th className="px-4 py-3 font-mono text-xs uppercase tracking-wider text-slate-400">
-                Status
+                {t("tableStatus")}
               </th>
               <th className="px-4 py-3 font-mono text-xs uppercase tracking-wider text-slate-400">
-                Amount
+                {t("tableAmount")}
               </th>
               <th className="hidden px-4 py-3 font-mono text-xs uppercase tracking-wider text-slate-400 sm:table-cell">
-                Description
+                {t("tableDescription")}
               </th>
               <th className="hidden px-4 py-3 font-mono text-xs uppercase tracking-wider text-slate-400 md:table-cell">
-                Date
+                {t("tableDate")}
               </th>
               <th className="px-4 py-3 font-mono text-xs uppercase tracking-wider text-slate-400">
-                Link
+                {t("tableLink")}
               </th>
             </tr>
           </thead>
@@ -637,17 +642,17 @@ export default function RecentPayments() {
                         : "bg-yellow-500/20 text-yellow-400"
                     }`}
                   >
-                    {payment.status}
+                    {toStatusLabel(t, payment.status)}
                   </span>
                 </td>
                 <td className="px-4 py-3 font-medium text-white">
                   {payment.amount} {payment.asset}
                 </td>
                 <td className="hidden px-4 py-3 text-slate-400 sm:table-cell">
-                  {payment.description || "—"}
+                  {payment.description || t("emptyDescriptionValue")}
                 </td>
                 <td className="hidden px-4 py-3 text-slate-400 md:table-cell">
-                  {new Date(payment.created_at).toLocaleDateString()}
+                  {new Date(payment.created_at).toLocaleDateString(locale)}
                 </td>
                 <td className="px-4 py-3">
                   <button
@@ -657,7 +662,7 @@ export default function RecentPayments() {
                     }}
                     className="font-mono text-xs text-mint transition-colors hover:text-glow"
                   >
-                    View →
+                    {t("view")} →
                   </button>
                 </td>
               </tr>
