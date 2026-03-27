@@ -5,7 +5,7 @@ import morgan from "morgan";
 import swaggerUi from "swagger-ui-express";
 import { ZodError } from "zod";
 import createPaymentsRouter from "./routes/payments.js";
-import merchantsRouter from "./routes/merchants.js";
+import createMerchantsRouter from "./routes/merchants.js";
 import webhooksRouter from "./routes/webhooks.js";
 import metricsRouter from "./routes/metrics.js";
 import authRouter from "./routes/auth.js";
@@ -21,6 +21,7 @@ import { closeRedisClient, connectRedisClient } from "./lib/redis.js";
 import {
   createRedisRateLimitStore,
   createVerifyPaymentRateLimit,
+  createMerchantRegistrationRateLimit,
 } from "./lib/rate-limit.js";
 import { createSwaggerSpec } from "./swagger.js";
 
@@ -28,6 +29,9 @@ validateEnvironmentVariables();
 
 const redisClient = await connectRedisClient();
 const verifyPaymentRateLimit = createVerifyPaymentRateLimit({
+  store: createRedisRateLimitStore({ client: redisClient }),
+});
+const merchantRegistrationRateLimit = createMerchantRegistrationRateLimit({
   store: createRedisRateLimitStore({ client: redisClient }),
 });
 
@@ -120,7 +124,7 @@ app.use("/api/audit-logs", requireApiKeyAuth());
 app.use("/api/merchants/rotate-webhook-secret", requireApiKeyAuth());
 app.use("/api", authRouter);
 app.use("/api", createPaymentsRouter({ verifyPaymentRateLimit }));
-app.use("/api", merchantsRouter);
+app.use("/api", createMerchantsRouter({ merchantRegistrationRateLimit }));
 app.use("/api", webhooksRouter);
 app.use("/api", metricsRouter);
 app.use("/api", auditRouter);
