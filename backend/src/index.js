@@ -1,6 +1,7 @@
 import cors from "cors";
 import "dotenv/config";
 import express from "express";
+import { createStream } from "rotating-file-stream";
 import morgan from "morgan";
 import swaggerUi from "swagger-ui-express";
 import { swaggerDocument } from './swagger.js';
@@ -17,6 +18,7 @@ import { pool, closePool } from "./lib/db.js";
 import { validateEnvironmentVariables } from "./lib/env-validation.js";
 import { formatZodError } from "./lib/request-schemas.js";
 import { idempotencyMiddleware } from "./lib/idempotency.js";
+import { LOG_FORMAT } from "./lib/logging.js";
 import { closeRedisClient, connectRedisClient } from "./lib/redis.js";
 import {
   createRedisRateLimitStore,
@@ -64,11 +66,27 @@ app.use(
       }
     },
     credentials: true,
-  }),
+  })
 );
 
 app.use(express.json({ limit: "1mb" }));
-app.use(morgan("dev"));
+
+// Create a rotating write stream
+const logDirectory = "log";
+
+// ensure log directory exists
+import { existsSync, mkdirSync } from "node:fs";
+if (!existsSync(logDirectory)) {
+  mkdirSync(logDirectory);
+}
+
+// create a rotating write stream
+const accessLogStream = createStream("access.log", {
+  interval: "1d", // rotate daily
+  path: logDirectory,
+});
+
+app.use(morgan(LOG_FORMAT, { stream: accessLogStream }));
 
 app.get("/health", async (req, res) => {
   try {
