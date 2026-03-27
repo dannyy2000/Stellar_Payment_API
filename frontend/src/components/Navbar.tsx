@@ -155,7 +155,10 @@ export default function Navbar() {
   const pathname = usePathname();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
-
+  const network =
+    (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? "testnet").toLowerCase();
+  const isMainnet = network === "public" || network === "mainnet";
+  const networkLabel = isMainnet ? "MAINNET" : "TESTNET";
   useHydrateMerchantStore();
 
   const toggleMenu = () => {
@@ -181,6 +184,13 @@ export default function Navbar() {
     { href: "/settings", label: "Settings" },
     { href: "/register", label: "Register" },
   ];
+  const activeDashboardMobileNavLinks = dashboardMobileNavLinks.filter(
+    (link) => link.enabled,
+  );
+
+  const showMobileBottomNav = activeDashboardMobileNavLinks.some((link) =>
+    isActive(pathname, link.href),
+  );
 
   return (
     <>
@@ -211,43 +221,33 @@ export default function Navbar() {
                 ))}
               </div>
 
-          {/* Mobile Menu Button */}
-          <button
-            ref={triggerRef}
-            onClick={toggleMenu}
-            className="flex flex-col gap-1.5 md:hidden"
-            aria-label="Toggle menu"
-            aria-expanded={isMenuOpen}
-            aria-controls="mobile-nav-menu"
-          >
-            {/* Network Badge */}
-            <span
-              aria-label={`Network: ${networkLabel}`}
-              className={`rounded-full border px-3 py-1 text-[10px] font-semibold tracking-[0.2em] ${
-                isMainnet
-                  ? "border-green-500/40 bg-green-500/15 text-green-300"
-                  : "border-yellow-500/50 bg-yellow-500/15 text-yellow-300"
-              }`}
-            >
-              {networkLabel}
-            </span>
+              {/* Mobile Menu Button */}
+              <button
+                ref={triggerRef}
+                onClick={toggleMenu}
+                className="flex flex-col gap-1.5 md:hidden"
+                aria-label="Toggle menu"
+                aria-expanded={isMenuOpen}
+                aria-controls="mobile-nav-menu"
+              >
+                <span
+                  className={`block h-0.5 w-6 bg-white transition-all ${
+                    isMenuOpen ? "translate-y-2 rotate-45" : ""
+                  }`}
+                ></span>
+                <span
+                  className={`block h-0.5 w-6 bg-white transition-all ${
+                    isMenuOpen ? "opacity-0" : ""
+                  }`}
+                ></span>
+                <span
+                  className={`block h-0.5 w-6 bg-white transition-all ${
+                    isMenuOpen ? "-translate-y-2 -rotate-45" : ""
+                  }`}
+                ></span>
+              </button>
 
-            {/* Mobile Menu Button */}
-            <button
-              onClick={toggleMenu}
-              className="flex flex-col gap-1.5 md:hidden"
-              aria-label="Toggle menu"
-            >
-              <span
-                className={`block h-0.5 w-6 bg-white transition-all ${
-                  isMenuOpen ? "translate-y-2 rotate-45" : ""
-                }`}
-              ></span>
-              <span
-                className={`block h-0.5 w-6 bg-white transition-all ${
-                  isMenuOpen ? "opacity-0" : ""
-                }`}
-              ></span>
+              {/* Network Badge */}
               <span
                 aria-label={`Network: ${networkLabel}`}
                 className={`rounded-full border px-3 py-1 text-[10px] font-semibold tracking-[0.2em] ${
@@ -260,31 +260,6 @@ export default function Navbar() {
               </span>
 
               <MerchantProfileCard />
-
-              {!showMobileBottomNav && (
-                <button
-                  type="button"
-                  onClick={() => setIsMenuOpen((open) => !open)}
-                  className="flex flex-col gap-1.5 md:hidden"
-                  aria-label="Toggle menu"
-                >
-                  <span
-                    className={`block h-0.5 w-6 bg-white transition-all ${
-                      isMenuOpen ? "translate-y-2 rotate-45" : ""
-                    }`}
-                  ></span>
-                  <span
-                    className={`block h-0.5 w-6 bg-white transition-all ${
-                      isMenuOpen ? "opacity-0" : ""
-                    }`}
-                  ></span>
-                  <span
-                    className={`block h-0.5 w-6 bg-white transition-all ${
-                      isMenuOpen ? "-translate-y-2 -rotate-45" : ""
-                    }`}
-                  ></span>
-                </button>
-              )}
             </div>
           </div>
 
@@ -311,7 +286,8 @@ export default function Navbar() {
 
         {/* Mobile Menu — uses hidden attribute so the panel stays in DOM for
             reliable aria-controls reference; visibility is controlled via CSS */}
-        <div
+     
+       <div
           id="mobile-nav-menu"
           hidden={!isMenuOpen}
           className="border-t border-white/10 py-4 md:hidden"
@@ -329,7 +305,6 @@ export default function Navbar() {
             ))}
           </div>
         </div>
-      </div>
-    </nav>
+    </>  
   );
 }

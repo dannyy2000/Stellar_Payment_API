@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import {
   Bar,
   BarChart,
@@ -12,11 +12,18 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import toast from "react-hot-toast";
 import {
   useHydrateMerchantStore,
   useMerchantApiKey,
   useMerchantHydrated,
 } from "@/lib/merchant-store";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface MetricData {
   date: string;
@@ -31,13 +38,171 @@ interface MetricsResponse {
 }
 
 const CHART_HEIGHT = 300;
+const EXPORT_SCALE = 2;
+
+type ExportFormat = "png" | "svg";
+
+function buildSvgMarkup(svg: SVGSVGElement): { markup: string; width: number; height: number } {
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  const bounds = svg.getBoundingClientRect();
+  const width = Math.max(Math.round(bounds.width), 1);
+  const height = Math.max(Math.round(bounds.height), 1);
+
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+  clone.setAttribute("width", String(width));
+  clone.setAttribute("height", String(height));
+
+  if (!clone.getAttribute("viewBox")) {
+    clone.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  }
+
+  const background = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  background.setAttribute("width", "100%");
+  background.setAttribute("height", "100%");
+  background.setAttribute("fill", "#0f172a");
+  clone.insertBefore(background, clone.firstChild);
+
+  return {
+    markup: new XMLSerializer().serializeToString(clone),
+    width,
+    height,
+  };
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+async function exportChart(
+  containerRef: RefObject<HTMLDivElement>,
+  format: ExportFormat,
+  filename: string,
+) {
+  const svg = containerRef.current?.querySelector("svg");
+  if (!svg) {
+    throw new Error("Chart export is unavailable until the chart finishes rendering.");
+  }
+
+  const { markup, width, height } = buildSvgMarkup(svg);
+  const svgBlob = new Blob([markup], {
+    type: "image/svg+xml;charset=utf-8",
+  });
+
+  if (format === "svg") {
+    downloadBlob(svgBlob, `${filename}.svg`);
+    return;
+  }
+
+  const url = URL.createObjectURL(svgBlob);
+
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const nextImage = new Image();
+      nextImage.onload = () => resolve(nextImage);
+      nextImage.onerror = () => reject(new Error("Failed to load chart for PNG export."));
+      nextImage.src = url;
+    });
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width * EXPORT_SCALE;
+    canvas.height = height * EXPORT_SCALE;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Canvas export is not available in this browser.");
+    }
+
+    context.scale(EXPORT_SCALE, EXPORT_SCALE);
+    context.drawImage(image, 0, 0, width, height);
+
+    const pngBlob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, "image/png");
+    });
+
+    if (!pngBlob) {
+      throw new Error("Failed to generate PNG export.");
+    }
+
+    downloadBlob(pngBlob, `${filename}.png`);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function ChartExportButton({
+  chartId,
+  containerRef,
+  exportingChart,
+  onExport,
+}: {
+  chartId: string;
+  containerRef: RefObject<HTMLDivElement>;
+  exportingChart: string | null;
+  onExport: (
+    chartId: string,
+    format: ExportFormat,
+    containerRef: RefObject<HTMLDivElement>,
+  ) => Promise<void>;
+}) {
+  const isExporting = exportingChart === chartId;
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={isExporting}
+          className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-300 transition-all hover:border-mint/30 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            className="h-4 w-4"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.8}
+          >
+            <path d="M12 4v10" strokeLinecap="round" strokeLinejoin="round" />
+            <path
+              d="m8.5 10.5 3.5 3.5 3.5-3.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M5 18.5h14"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          {isExporting ? "Exporting..." : "Download Image"}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={() => void onExport(chartId, "png", containerRef)}>
+          Download PNG
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => void onExport(chartId, "svg", containerRef)}>
+          Download SVG
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 export default function PaymentMetrics() {
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exportingChart, setExportingChart] = useState<string | null>(null);
   const apiKey = useMerchantApiKey();
   const hydrated = useMerchantHydrated();
+  const volumeChartRef = useRef<HTMLDivElement>(null);
+  const countChartRef = useRef<HTMLDivElement>(null);
 
   useHydrateMerchantStore();
 
@@ -110,6 +275,25 @@ export default function PaymentMetrics() {
     }),
   }));
 
+  const handleExport = async (
+    chartId: string,
+    format: ExportFormat,
+    containerRef: RefObject<HTMLDivElement>,
+  ) => {
+    setExportingChart(chartId);
+
+    try {
+      await exportChart(containerRef, format, chartId);
+      toast.success(`Chart downloaded as ${format.toUpperCase()}`);
+    } catch (exportError) {
+      const message =
+        exportError instanceof Error ? exportError.message : "Failed to export chart.";
+      toast.error(message);
+    } finally {
+      setExportingChart(null);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-6">
       {/* Metrics Summary */}
@@ -142,10 +326,21 @@ export default function PaymentMetrics() {
       </div>
 
       {/* Chart */}
-      <div className="flex flex-col gap-3 rounded-xl border border-white/10 bg-white/5 p-6 backdrop-blur">
-        <div className="flex flex-col gap-1">
-          <h3 className="font-semibold text-white">Payment Volume (7 Days)</h3>
-          <p className="text-xs text-slate-400">Daily transaction amount</p>
+      <div
+        ref={volumeChartRef}
+        className="flex flex-col gap-3 rounded-xl border border-white/10 bg-white/5 p-6 backdrop-blur"
+      >
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex flex-col gap-1">
+            <h3 className="font-semibold text-white">Payment Volume (7 Days)</h3>
+            <p className="text-xs text-slate-400">Daily transaction amount</p>
+          </div>
+          <ChartExportButton
+            chartId="payment-volume-7-days"
+            containerRef={volumeChartRef}
+            exportingChart={exportingChart}
+            onExport={handleExport}
+          />
         </div>
 
         <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
@@ -201,12 +396,23 @@ export default function PaymentMetrics() {
       </div>
 
       {/* Payment Count Chart */}
-      <div className="flex flex-col gap-3 rounded-xl border border-white/10 bg-white/5 p-6 backdrop-blur">
-        <div className="flex flex-col gap-1">
-          <h3 className="font-semibold text-white">Payment Count (7 Days)</h3>
-          <p className="text-xs text-slate-400">
-            Number of transactions per day
-          </p>
+      <div
+        ref={countChartRef}
+        className="flex flex-col gap-3 rounded-xl border border-white/10 bg-white/5 p-6 backdrop-blur"
+      >
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex flex-col gap-1">
+            <h3 className="font-semibold text-white">Payment Count (7 Days)</h3>
+            <p className="text-xs text-slate-400">
+              Number of transactions per day
+            </p>
+          </div>
+          <ChartExportButton
+            chartId="payment-count-7-days"
+            containerRef={countChartRef}
+            exportingChart={exportingChart}
+            onExport={handleExport}
+          />
         </div>
 
         <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
