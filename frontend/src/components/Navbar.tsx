@@ -119,8 +119,7 @@ function isActive(pathname: string, href: string) {
 
 const appNavLinks: AppNavLink[] = [
   { href: "/", label: "Home" },
-  { href: "/dashboard/create", label: "Create Payment" },
-  { href: "/settings", label: "Settings" },
+  { href: "/login", label: "Login" },
   { href: "/register", label: "Register" },
 ];
 

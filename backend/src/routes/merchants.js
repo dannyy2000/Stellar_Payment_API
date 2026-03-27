@@ -430,4 +430,104 @@ router.put("/merchant-limits", async (req, res, next) => {
   }
 });
 
+// Stellar public keys start with 'G' and are 56 characters long.
+const stellarAddressSchema = z
+  .string()
+  .trim()
+  .refine(
+    (v) => v.startsWith("G") && v.length === 56,
+    "Each issuer must be a valid Stellar public key (starts with 'G', 56 characters)"
+  );
+
+const allowedIssuersSchema = z.array(stellarAddressSchema);
+
+/**
+ * @swagger
+ * /api/merchant-issuers:
+ *   get:
+ *     summary: Get the allowed issuers list for the authenticated merchant
+ *     tags: [Merchants]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     responses:
+ *       200:
+ *         description: Current allowed issuers list (empty array means all issuers accepted)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 allowed_issuers:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ */
+router.get("/merchant-issuers", async (req, res, next) => {
+  try {
+    const { data, error } = await supabase
+      .from("merchants")
+      .select("allowed_issuers")
+      .eq("id", req.merchant.id)
+      .maybeSingle();
+
+    if (error) {
+      error.status = 500;
+      throw error;
+    }
+
+    res.json({ allowed_issuers: data?.allowed_issuers ?? [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * @swagger
+ * /api/merchant-issuers:
+ *   put:
+ *     summary: Set the allowed issuers list for the authenticated merchant
+ *     tags: [Merchants]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [allowed_issuers]
+ *             properties:
+ *               allowed_issuers:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: Array of trusted Stellar issuer public keys. Send an empty array to allow all issuers.
+ *     responses:
+ *       200:
+ *         description: Updated allowed issuers list
+ *       400:
+ *         description: Validation error
+ */
+router.put("/merchant-issuers", async (req, res, next) => {
+  try {
+    const body = z.object({ allowed_issuers: allowedIssuersSchema }).parse(req.body || {});
+
+    const { data, error } = await supabase
+      .from("merchants")
+      .update({ allowed_issuers: body.allowed_issuers })
+      .eq("id", req.merchant.id)
+      .select("allowed_issuers")
+      .single();
+
+    if (error) {
+      error.status = 500;
+      throw error;
+    }
+
+    res.json({ allowed_issuers: data.allowed_issuers });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

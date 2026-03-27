@@ -262,3 +262,7 @@ export function useAddTrustedAddress() {
 export function useRemoveTrustedAddress() {
   return useMerchantStore((state) => state.removeTrustedAddress);
 }
+
+export function useMerchantId() {
+  return useMerchantStore((state) => state.merchant?.id ?? null);
+}

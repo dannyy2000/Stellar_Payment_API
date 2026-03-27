@@ -72,9 +72,10 @@ app.use(morgan("dev"));
 
 app.get("/health", async (req, res) => {
   try {
-    const [dbResult, horizonReachable] = await Promise.all([
+    const [dbResult, horizonReachable, redisReachable] = await Promise.all([
       supabase.from("merchants").select("id").limit(1),
       isHorizonReachable(),
+      redisClient.ping().then(() => true).catch(() => false),
     ]);
 
     const { error } = dbResult;
@@ -85,6 +86,7 @@ app.get("/health", async (req, res) => {
         service: "stellar-payment-api",
         error: "Database unavailable",
         horizon_reachable: horizonReachable,
+        redis_reachable: redisReachable,
       });
     }
 
@@ -94,6 +96,17 @@ app.get("/health", async (req, res) => {
         service: "stellar-payment-api",
         error: "Horizon unavailable",
         horizon_reachable: false,
+        redis_reachable: redisReachable,
+      });
+    }
+
+    if (!redisReachable) {
+      return res.status(503).json({
+        ok: false,
+        service: "stellar-payment-api",
+        error: "Redis unavailable",
+        horizon_reachable: horizonReachable,
+        redis_reachable: false,
       });
     }
 
@@ -101,6 +114,7 @@ app.get("/health", async (req, res) => {
       ok: true,
       service: "stellar-payment-api",
       horizon_reachable: true,
+      redis_reachable: true,
     });
   } catch {
     res.status(503).json({
@@ -108,6 +122,7 @@ app.get("/health", async (req, res) => {
       service: "stellar-payment-api",
       error: "Health check failed",
       horizon_reachable: false,
+      redis_reachable: false,
     });
   }
 });
