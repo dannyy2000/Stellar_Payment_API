@@ -116,6 +116,7 @@
     "showAsset": "Mostrar {asset}",
     "hideAsset": "Ocultar {asset}",
     "noPayments": "Nao ha pagamentos concluidos neste periodo.",
+    "weeklyAvgLabel": "Med. 7D",
     "ranges": {
       "7D": "7 dias",
       "30D": "30 dias",

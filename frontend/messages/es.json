@@ -116,6 +116,7 @@
     "showAsset": "Mostrar {asset}",
     "hideAsset": "Ocultar {asset}",
     "noPayments": "No hay pagos completados en este periodo.",
+    "weeklyAvgLabel": "Prom. 7D",
     "ranges": {
       "7D": "7 dias",
       "30D": "30 dias",

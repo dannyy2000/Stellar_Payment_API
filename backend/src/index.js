@@ -5,7 +5,7 @@ import morgan from "morgan";
 import swaggerUi from "swagger-ui-express";
 import { ZodError } from "zod";
 import createPaymentsRouter from "./routes/payments.js";
-import merchantsRouter from "./routes/merchants.js";
+import createMerchantsRouter from "./routes/merchants.js";
 import webhooksRouter from "./routes/webhooks.js";
 import metricsRouter from "./routes/metrics.js";
 import authRouter from "./routes/auth.js";
@@ -21,6 +21,7 @@ import { closeRedisClient, connectRedisClient } from "./lib/redis.js";
 import {
   createRedisRateLimitStore,
   createVerifyPaymentRateLimit,
+  createMerchantRegistrationRateLimit,
 } from "./lib/rate-limit.js";
 import { createSwaggerSpec } from "./swagger.js";
 
@@ -28,6 +29,9 @@ validateEnvironmentVariables();
 
 const redisClient = await connectRedisClient();
 const verifyPaymentRateLimit = createVerifyPaymentRateLimit({
+  store: createRedisRateLimitStore({ client: redisClient }),
+});
+const merchantRegistrationRateLimit = createMerchantRegistrationRateLimit({
   store: createRedisRateLimitStore({ client: redisClient }),
 });
 
@@ -58,7 +62,7 @@ app.use(
       }
     },
     credentials: true,
-  }),
+  })
 );
 
 app.use(express.json({ limit: "1mb" }));
@@ -112,14 +116,7 @@ app.use("/api/sessions", requireApiKeyAuth());
 app.use("/api/sessions", idempotencyMiddleware);
 app.use("/api/payments", requireApiKeyAuth());
 app.use("/api/rotate-key", requireApiKeyAuth());
-app.use("/api/webhooks/logs", requireApiKeyAuth());
-app.use("/api/merchant-branding", requireApiKeyAuth());
-app.use("/api/webhook-settings", requireApiKeyAuth());
-app.use("/api/regenerate-webhook-secret", requireApiKeyAuth());
-app.use("/api/audit-logs", requireApiKeyAuth());
-app.use("/api/merchants/rotate-webhook-secret", requireApiKeyAuth());
-app.use("/api", authRouter);
-app.use("/api", createPaymentsRouter({ verifyPaymentRateLimit }));
+
 app.use("/api", merchantsRouter);
 app.use("/api", webhooksRouter);
 app.use("/api", metricsRouter);
@@ -128,13 +125,25 @@ app.use("/api", auditRouter);
 app.use((err, req, res, next) => {
   if (err instanceof ZodError) {
     return res.status(400).json({
-      error: formatZodError(err),
+      error: formatZodError(err), // Zod errors are client-side validation issues, safe to expose.
     });
   }
 
   const status = err.status || 500;
+  let errorMessage;
+
+  if (process.env.NODE_ENV === "production" && status >= 500) {
+    // For 5xx errors in production, return a generic message to avoid leaking internal details.
+    errorMessage = "An unexpected error occurred. Please try again later.";
+    console.error("Unhandled Production Server Error:", err); // Log full error to server console.
+  } else {
+    // For client errors (e.g., 4xx) or in development, expose the error message.
+    errorMessage = err.message || "Internal Server Error";
+    console.error("Unhandled Error:", err); // Log full error to server console.
+  }
+
   res.status(status).json({
-    error: err.message || "Internal Server Error",
+    error: errorMessage,
   });
 });
 

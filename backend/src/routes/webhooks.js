@@ -85,7 +85,7 @@ router.get("/webhooks/logs", async (req, res, next) => {
     // Apply pagination
     query = query.range(offset, offset + limit - 1);
     
-    const { data, error, count } = await query;
+    const { data: logsData, error, count } = await query;
     
     if (error) {
       error.status = 500;
@@ -93,7 +93,7 @@ router.get("/webhooks/logs", async (req, res, next) => {
     }
     
     // Format response
-    const logs = data.map(log => ({
+    const logs = logsData.map(log => ({
       id: log.id,
       payment_id: log.payment_id,
       status_code: log.status_code,

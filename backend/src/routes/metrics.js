@@ -1,6 +1,8 @@
 import express from "express";
 import { requireApiKeyAuth } from "../lib/auth.js";
 import { withMerchantContext } from "./db-rls.js";
+import { validateRequest } from "../lib/validation.js";
+import { metricsVolumeQuerySchema } from "../lib/request-schemas.js";
 
 const router = express.Router();
 
@@ -328,19 +330,13 @@ router.get("/metrics/revenue", requireApiKeyAuth(), async (req, res, next) => {
  *       500:
  *         description: Server error
  */
-router.get("/metrics/volume", requireApiKeyAuth(), async (req, res, next) => {
+router.get("/metrics/volume", requireApiKeyAuth(), validateRequest({ query: metricsVolumeQuerySchema }), async (req, res, next) => {
   try {
     const pool = req.app.locals.pool;
     const merchantId = req.merchant.id;
 
     const VALID_RANGES = { "7D": 7, "30D": 30, "1Y": 365 };
-    const range = (req.query.range || "7D").toUpperCase();
-
-    if (!VALID_RANGES[range]) {
-      return res
-        .status(400)
-        .json({ error: "Invalid range. Use 7D, 30D, or 1Y." });
-    }
+    const range = req.query.range;
 
     const days = VALID_RANGES[range];
 

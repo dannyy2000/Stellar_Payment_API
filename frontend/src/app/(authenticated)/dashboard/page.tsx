@@ -6,13 +6,16 @@ import RecentPayments from "@/components/RecentPayments";
 import WithdrawalModal from "@/components/WithdrawalModal";
 import DashboardSkeleton from "@/components/DashboardSkeleton";
 import Link from "next/link";
-import { useMerchantHydrated, useHydrateMerchantStore } from "@/lib/merchant-store";
+import { useMerchantHydrated, useHydrateMerchantStore, useMerchantApiKey } from "@/lib/merchant-store";
 import { useTranslations } from "next-intl";
+import FirstApiKeyModal from "@/components/FirstApiKeyModal";
 
 export default function DashboardPage() {
   const t = useTranslations("dashboardPage");
   const [isWithdrawOpen, setIsWithdrawOpen] = useState(false);
+  const [isFirstKeyModalOpen, setIsFirstKeyModalOpen] = useState(false);
   const hydrated = useMerchantHydrated();
+  const apiKey = useMerchantApiKey();
   const [loading, setLoading] = useState(true);
 
   useHydrateMerchantStore();
@@ -25,6 +28,17 @@ export default function DashboardPage() {
       return () => clearTimeout(timer);
     }
   }, [hydrated]);
+
+  useEffect(() => {
+    // Show the "First Key" onboarding modal if the merchant has 0 keys
+    // We wait for the dashboard to finish initial loading first.
+    if (hydrated && !loading && !apiKey) {
+      const timer = setTimeout(() => {
+        setIsFirstKeyModalOpen(true);
+      }, 1500); 
+      return () => clearTimeout(timer);
+    }
+  }, [hydrated, loading, apiKey]);
 
   if (!hydrated || loading) {
     return <DashboardSkeleton />;
@@ -124,6 +138,11 @@ export default function DashboardPage() {
       <WithdrawalModal 
         isOpen={isWithdrawOpen} 
         onClose={() => setIsWithdrawOpen(false)} 
+      />
+
+      <FirstApiKeyModal 
+        isOpen={isFirstKeyModalOpen} 
+        onClose={() => setIsFirstKeyModalOpen(false)} 
       />
     </div>
   );

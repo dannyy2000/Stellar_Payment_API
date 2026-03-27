@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:visual": "playwright test tests/e2e/critical-pages-vrt.spec.ts",
+    "test:visual:update": "playwright test tests/e2e/critical-pages-vrt.spec.ts --update-snapshots"
   },
   "dependencies": {
     "@radix-ui/react-dropdown-menu": "^2.1.16",

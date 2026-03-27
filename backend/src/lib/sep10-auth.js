@@ -14,8 +14,13 @@ const NETWORK_PASSPHRASE =
 
 const CHALLENGE_EXPIRES_IN = 300; // 5 minutes
 
-if (!process.env.SEP10_SERVER_SIGNING_KEY) {
-  console.warn("⚠️  SEP10_SERVER_SIGNING_KEY not set — SEP-0010 auth disabled");
+/**
+ * Dynamically retrieve the server signing key from environment
+ * This prevents module-level caching issues in tests
+ * @returns {string|undefined} The server signing key
+ */
+function getServerSigningKey() {
+  return process.env.SEP10_SERVER_SIGNING_KEY;
 }
 
 /**
@@ -25,7 +30,7 @@ if (!process.env.SEP10_SERVER_SIGNING_KEY) {
  * @returns {string} Base64-encoded challenge transaction XDR
  */
 export function generateChallenge(clientAccountId, homeDomain = "localhost") {
-  const serverSigningKey = process.env.SEP10_SERVER_SIGNING_KEY;
+  const serverSigningKey = getServerSigningKey();
 
   if (!serverSigningKey) {
     throw new Error("SEP-0010 server signing key not configured");
@@ -69,7 +74,7 @@ export function generateChallenge(clientAccountId, homeDomain = "localhost") {
  * @returns {{ valid: boolean, error?: string }}
  */
 export function verifyChallenge(challengeXdr, clientAccountId) {
-  const serverSigningKey = process.env.SEP10_SERVER_SIGNING_KEY;
+  const serverSigningKey = getServerSigningKey();
 
   if (!serverSigningKey) {
     return { valid: false, error: "SEP-0010 not configured" };

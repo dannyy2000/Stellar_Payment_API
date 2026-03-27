@@ -143,14 +143,18 @@ Webhook payload:
 }
 ```
 
-## Current Roadmap (Short)
+## Roadmap & Issues
 
-- Add merchant authentication (API keys/JWT)
-- Improve webhook retries + delivery logs
-- Add payment memo support for easier matching
-- Build dashboard views for payments
-- Add tests for API and Stellar verification
+The project currently has a comprehensive roadmap of **100+ active issues** covering:
+- **Core Stellar Integrations**: SEP-0001, SEP-0010, Path Payments, etc.
+- **Backend Architecture**: Service layer refactor, Redis idempotency, API versioning.
+- **Frontend/UX**: Merchant branding, real-time checkout, dashboard analytics.
+- **Security & Reliability**: Webhook signatures, rate limiting, audit logs.
+- **Infrastructure**: Sentry monitoring, Prometheus metrics, database archival.
 
 ## Contributing
 
-Issues are designed to be newcomer-friendly. See the roadmap above and grab any item labeled `good-first-issue`.
+We are actively seeking contributors! See the [GitHub Issues](https://github.com/emdevelopa/Stellar_Payment_API/issues) to get started. Each issue is tagged with complexity (`complexity:trivial`, `complexity:medium`, `complexity:high`) and category.
+
+If you are new, look for issues labeled `good first issue`.
+

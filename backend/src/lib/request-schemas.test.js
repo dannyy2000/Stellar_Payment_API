@@ -346,6 +346,9 @@ describe("formatZodError", () => {
       },
     ]);
 
-    expect(formatZodError(error)).toBe("first issue");
+    expect(formatZodError(error)).toEqual([
+      { field: "email", message: "first issue" },
+      { field: "notification_email", message: "second issue" }
+    ]);
   });
 });

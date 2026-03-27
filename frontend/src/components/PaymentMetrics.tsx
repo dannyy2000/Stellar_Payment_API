@@ -61,6 +61,26 @@ function colorForAsset(asset: string, index: number): string {
   return ASSET_COLORS[asset] ?? FALLBACK_COLORS[index % FALLBACK_COLORS.length];
 }
 
+function computeMovingAverages(
+  data: VolumeDataPoint[],
+  assets: string[],
+  window = 7,
+): Record<string, number[]> {
+  const result: Record<string, number[]> = {};
+  for (const asset of assets) {
+    result[asset] = data.map((_, i) => {
+      const start = Math.max(0, i - window + 1);
+      const slice = data.slice(start, i + 1);
+      const sum = slice.reduce((acc, pt) => {
+        const v = pt[asset];
+        return acc + (typeof v === "number" ? v : 0);
+      }, 0);
+      return slice.length > 0 ? sum / slice.length : 0;
+    });
+  }
+  return result;
+}
+
 function buildSvgMarkup(svg: SVGSVGElement): { markup: string; width: number; height: number } {
   const clone = svg.cloneNode(true) as SVGSVGElement;
   const bounds = svg.getBoundingClientRect();
@@ -357,12 +377,16 @@ export default function PaymentMetrics({ showSkeleton = false }: { showSkeleton?
   }
 
   const assets = volumeData?.assets ?? [];
-  const chartData = (volumeData?.data ?? []).map((dataPoint) => ({
+  const maAverages = computeMovingAverages(volumeData?.data ?? [], assets);
+  const chartData = (volumeData?.data ?? []).map((dataPoint, i) => ({
     ...dataPoint,
     dateShort: new Date(dataPoint.date).toLocaleDateString(locale, {
       month: "short",
       day: "numeric",
     }),
+    ...Object.fromEntries(
+      assets.map((asset) => [`${asset}_ma`, maAverages[asset]?.[i] ?? 0]),
+    ),
   }));
 
   return (
@@ -555,6 +579,24 @@ export default function PaymentMetrics({ showSkeleton = false }: { showSkeleton?
                     activeDot={{ r: 5 }}
                     isAnimationActive
                     animationDuration={400}
+                  />
+                ),
+              )}
+              {assets.map((asset, index) =>
+                hiddenAssets.has(asset) ? null : (
+                  <Line
+                    key={`${asset}_ma`}
+                    type="monotone"
+                    dataKey={`${asset}_ma`}
+                    name={`${asset} ${t("weeklyAvgLabel")}`}
+                    stroke={colorForAsset(asset, index)}
+                    strokeWidth={1.5}
+                    strokeDasharray="4 4"
+                    dot={false}
+                    activeDot={false}
+                    isAnimationActive
+                    animationDuration={400}
+                    connectNulls
                   />
                 ),
               )}

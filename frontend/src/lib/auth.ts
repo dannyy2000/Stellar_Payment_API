@@ -128,3 +128,25 @@ export async function registerMerchant(
 export function logout(): void {
   clearToken();
 }
+
+export async function generateFirstApiKey(): Promise<string> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+  const token = getToken();
+
+  if (!token) throw new Error("No session token found");
+
+  const res = await fetch(`${apiUrl}/api/merchants/generate-api-key`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`
+    },
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? "Failed to generate API key");
+  }
+
+  const { api_key } = await res.json();
+  return api_key;
+}
