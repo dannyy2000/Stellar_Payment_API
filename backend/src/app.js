@@ -8,6 +8,7 @@ import { ZodError } from "zod";
 import createPaymentsRouter from "./routes/payments.js";
 import merchantsRouter from "./routes/merchants.js";
 import metricsRouter from "./routes/metrics.js";
+import webhooksRouter from "./routes/webhooks.js";
 
 import { requireApiKeyAuth } from "./lib/auth.js";
 import { isHorizonReachable } from "./lib/stellar.js";
@@ -60,6 +61,7 @@ export async function createApp({ redisClient }) {
 
   app.use(express.json({ limit: "1mb" }));
   app.use(morgan("dev"));
+  
 
   // Health check
   app.get("/health", async (req, res) => {
@@ -106,10 +108,12 @@ export async function createApp({ redisClient }) {
   app.use("/api/payments", requireApiKeyAuth());
   app.use("/api/rotate-key", requireApiKeyAuth());
   app.use("/api/merchant-branding", requireApiKeyAuth());
+  app.use("/api/webhooks", requireApiKeyAuth());
 
   app.use("/api", createPaymentsRouter({ verifyPaymentRateLimit }));
   app.use("/api", merchantsRouter);
   app.use("/api", metricsRouter);
+  app.use("/api", webhooksRouter);
 
   app.use((err, req, res, next) => {
     if (err instanceof ZodError) {
