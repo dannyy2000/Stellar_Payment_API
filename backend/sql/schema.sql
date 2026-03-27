@@ -11,6 +11,7 @@ create table if not exists merchants (
   recipient text,
   branding_config jsonb,
   merchant_settings jsonb not null default '{"send_success_emails": true}'::jsonb,
+  metadata jsonb,
   created_at timestamptz not null default now()
 );
 
