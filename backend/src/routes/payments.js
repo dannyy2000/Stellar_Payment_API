@@ -7,9 +7,7 @@ import { sendWebhook } from "../lib/webhooks.js";
 import { sanitizeMetadataMiddleware } from "../lib/sanitize-metadata.js";
 import rateLimit from "express-rate-limit";
 
-const router = express.Router();
-
-const verifyPaymentRateLimit = rateLimit({
+const defaultVerifyPaymentRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   message: { error: "Too many verification requests, please try again later." },
@@ -52,6 +50,11 @@ function validateCreatePayment(body) {
 
   return null;
 }
+
+function createPaymentsRouter({
+  verifyPaymentRateLimit = defaultVerifyPaymentRateLimit,
+} = {}) {
+  const router = express.Router();
 
 /**
  * @swagger
@@ -107,7 +110,7 @@ function validateCreatePayment(body) {
  *       400:
  *         description: Validation error
  */
-router.post("/create-payment", sanitizeMetadataMiddleware, async (req, res, next) => {
+  router.post("/create-payment", sanitizeMetadataMiddleware, async (req, res, next) => {
   try {
     const error = validateCreatePayment(req.body || {});
     if (error) {
@@ -184,7 +187,7 @@ router.post("/create-payment", sanitizeMetadataMiddleware, async (req, res, next
  *       404:
  *         description: Payment not found
  */
-router.get("/payment-status/:id", async (req, res, next) => {
+  router.get("/payment-status/:id", async (req, res, next) => {
   try {
     const { data, error } = await supabase
       .from("payments")
@@ -241,7 +244,7 @@ router.get("/payment-status/:id", async (req, res, next) => {
  *       404:
  *         description: Payment not found
  */
-router.post("/verify-payment/:id", verifyPaymentRateLimit, async (req, res, next) => {
+  router.post("/verify-payment/:id", verifyPaymentRateLimit, async (req, res, next) => {
   try {
     const { data, error } = await supabase
       .from("payments")
@@ -360,7 +363,7 @@ router.post("/verify-payment/:id", verifyPaymentRateLimit, async (req, res, next
  *       410:
  *         description: Payment already deleted
  */
-router.delete("/payments/:id", async (req, res, next) => {
+  router.delete("/payments/:id", async (req, res, next) => {
   try {
     // First check if payment exists and is not already deleted
     const { data: existing, error: fetchError } = await supabase
@@ -407,4 +410,7 @@ router.delete("/payments/:id", async (req, res, next) => {
   }
 });
 
-export default router;
+  return router;
+}
+
+export default createPaymentsRouter;

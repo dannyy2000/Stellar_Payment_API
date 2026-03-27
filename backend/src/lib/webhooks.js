@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { createHmac } from "crypto";
+import { createHmac, timingSafeEqual } from "crypto";
 import { supabase } from "./supabase.js";
 
 const RETRY_DELAYS_MS = [10_000, 30_000, 60_000]; // 10s, 30s, 60s
@@ -9,6 +9,44 @@ const RETRY_DELAYS_MS = [10_000, 30_000, 60_000]; // 10s, 30s, 60s
  */
 export function signPayload(rawBody, secret) {
   return createHmac("sha256", secret).update(rawBody).digest("hex");
+}
+
+function parseSignatureHeader(signatureHeader) {
+  if (typeof signatureHeader !== "string") return null;
+  const trimmed = signatureHeader.trim();
+  if (!trimmed.startsWith("sha256=")) return null;
+  const signature = trimmed.slice("sha256=".length);
+  if (!/^[a-f0-9]{64}$/i.test(signature)) return null;
+  return signature.toLowerCase();
+}
+
+function signaturesEqual(a, b) {
+  const aBuffer = Buffer.from(a, "utf8");
+  const bBuffer = Buffer.from(b, "utf8");
+  if (aBuffer.length !== bBuffer.length) return false;
+  return timingSafeEqual(aBuffer, bBuffer);
+}
+
+/**
+ * Verifies a Stellar-Signature header against the merchant webhook secrets.
+ * Accepts the current secret and, during grace window, the previous secret.
+ */
+export function verifyWebhook(rawBody, signatureHeader, merchant) {
+  const signature = parseSignatureHeader(signatureHeader);
+  if (!signature || !merchant || !merchant.webhook_secret) return false;
+
+  const candidateSecrets = [merchant.webhook_secret];
+  if (merchant.webhook_secret_old && merchant.webhook_secret_expiry) {
+    const expiry = new Date(merchant.webhook_secret_expiry);
+    if (!Number.isNaN(expiry.getTime()) && expiry.getTime() > Date.now()) {
+      candidateSecrets.push(merchant.webhook_secret_old);
+    }
+  }
+
+  return candidateSecrets.some((secret) => {
+    const expected = signPayload(rawBody, secret);
+    return signaturesEqual(signature, expected);
+  });
 }
 
 /**
