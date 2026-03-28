@@ -178,6 +178,9 @@ export default function RecentPayments({
 
     async function fetchPayments() {
       try {
+        setLoading(true);
+        setError(null);
+
         if (!apiKey) {
           setError(t("missingApiKey"));
           setPayments([]);
@@ -186,33 +189,17 @@ export default function RecentPayments({
           return;
         }
 
-        setLoading(true);
-        setError(null);
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+        const params = buildSearchParams(filters);
+        params.set("page", page.toString());
+        params.set("limit", LIMIT.toString());
 
-        const apiUrl =
-          process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-
-        // Build query params
-        const params = new URLSearchParams({
-          page: page.toString(),
-          limit: LIMIT.toString(),
+        const response = await fetch(`${apiUrl}/api/payments?${params.toString()}`, {
+          headers: {
+            "x-api-key": apiKey,
+          },
+          signal: controller.signal,
         });
-
-        if (filters.search) params.append("search", filters.search);
-        if (filters.status !== "all") params.append("status", filters.status);
-        if (filters.asset !== "all") params.append("asset", filters.asset);
-        if (filters.dateFrom) params.append("date_from", filters.dateFrom);
-        if (filters.dateTo) params.append("date_to", filters.dateTo);
-
-        const response = await fetch(
-          `${apiUrl}/api/payments?${params.toString()}`,
-          {
-            headers: {
-              "x-api-key": apiKey,
-            },
-            signal: controller.signal,
-          }
-        );
 
         if (!response.ok) {
           throw new Error(t("fetchFailed"));
