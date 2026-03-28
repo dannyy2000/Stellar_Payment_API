@@ -1,10 +1,12 @@
 import "dotenv/config";
+import { initSentry } from "./lib/sentry.js";
 import { createApp } from "./app.js";
 import { connectRedisClient, closeRedisClient } from "./lib/redis.js";
 import { closePool, pool } from "./lib/db.js";
 import { validateEnvironmentVariables } from "./lib/env-validation.js";
 import { logger } from "./lib/logger.js";
 
+initSentry();
 validateEnvironmentVariables();
 
 const port = process.env.PORT || 4000;

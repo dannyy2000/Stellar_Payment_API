@@ -1,20 +1,37 @@
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import express from "express";
 import rateLimit from "express-rate-limit";
-import { randomUUID } from "node:crypto";
-import {
-  findMatchingPayment,
-  createRefundTransaction,
-} from "../lib/stellar.js";
-import { supabase } from "../lib/supabase.js";
+import { paymentService } from "../services/paymentService.js";
 import { validateUuidParam } from "../lib/validate-uuid.js";
 import {
   paymentSessionZodSchema,
-  parseVersionedPaymentBody,
+  paginationQuerySchema,
+  refundConfirmSchema,
+  pathPaymentQuoteQuerySchema
 } from "../lib/request-schemas.js";
+import { validateRequest } from "../lib/validation.js";
 import { createCreatePaymentRateLimit } from "../lib/create-payment-rate-limit.js";
 import { sendWebhook } from "../lib/webhooks.js";
+import { sendReceiptEmail } from "../lib/email.js";
+import { renderReceiptEmail } from "../lib/email-templates.js";
 import { resolveBrandingConfig } from "../lib/branding.js";
+import {
+  connectRedisClient,
+  getCachedPayment,
+  setCachedPayment,
+  invalidatePaymentCache,
+} from "../lib/redis.js";
+import { getPayloadForVersion } from "../webhooks/resolver.js";
+import {
+  paymentCreatedCounter,
+  paymentConfirmedCounter,
+  paymentConfirmationLatency,
+  paymentFailedCounter,
+} from "../lib/metrics.js";
+import { sanitizeMetadataMiddleware } from "../lib/sanitize-metadata.js";
+import { supabase } from "../lib/supabase.js";
+import { findMatchingPayment } from "../lib/stellar.js";
 
 const createPaymentRateLimit = createCreatePaymentRateLimit();
 
@@ -25,6 +42,30 @@ const defaultVerifyPaymentRateLimit = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+function applyPaymentFilters(query, req) {
+  const { status, asset, date_from: dateFrom, date_to: dateTo, search } = req.query || {};
+
+  if (typeof status === "string" && status.length > 0) {
+    query = query.eq("status", status);
+  }
+  if (typeof asset === "string" && asset.length > 0) {
+    query = query.eq("asset", asset);
+  }
+  if (typeof dateFrom === "string" && dateFrom.length > 0) {
+    query = query.gte("created_at", `${dateFrom}T00:00:00.000Z`);
+  }
+  if (typeof dateTo === "string" && dateTo.length > 0) {
+    query = query.lte("created_at", `${dateTo}T23:59:59.999Z`);
+  }
+  if (typeof search === "string" && search.trim().length > 0) {
+    const term = search.trim().replaceAll(",", "\\,");
+    query = query.or(
+      `id.ilike.%${term}%,description.ilike.%${term}%,recipient.ilike.%${term}%`
+    );
+  }
+  return query;
+}
 
 function createPaymentsRouter({
   verifyPaymentRateLimit = defaultVerifyPaymentRateLimit,
@@ -63,8 +104,6 @@ function createPaymentsRouter({
    *               recipient:
    *                 type: string
    *                 description: Stellar address of the recipient
-   *               merchant_id:
-   *                 type: string
    *               description:
    *                 type: string
    *               memo:
@@ -122,7 +161,7 @@ function createPaymentsRouter({
    */
   async function createSession(req, res, next) {
     try {
-      const body = parseVersionedPaymentBody(req);
+      const body = req.body;
 
       // Per-asset payment limit validation (#153)
       const limits = req.merchant.payment_limits;
@@ -130,6 +169,7 @@ function createPaymentsRouter({
         const assetLimits = limits[body.asset];
         if (assetLimits) {
           if (assetLimits.min !== undefined && body.amount < assetLimits.min) {
+            paymentFailedCounter.inc({ asset: body.asset, reason: "below_min" });
             return res.status(400).json({
               error: `Amount is below the minimum for ${body.asset}`,
               min: assetLimits.min,
@@ -137,6 +177,7 @@ function createPaymentsRouter({
             });
           }
           if (assetLimits.max !== undefined && body.amount > assetLimits.max) {
+            paymentFailedCounter.inc({ asset: body.asset, reason: "above_max" });
             return res.status(400).json({
               error: `Amount exceeds the maximum for ${body.asset}`,
               max: assetLimits.max,
@@ -151,8 +192,10 @@ function createPaymentsRouter({
       const allowedIssuers = req.merchant.allowed_issuers;
       if (Array.isArray(allowedIssuers) && allowedIssuers.length > 0) {
         if (!body.asset_issuer || !allowedIssuers.includes(body.asset_issuer)) {
+          paymentFailedCounter.inc({ asset: body.asset, reason: "invalid_issuer" });
           return res.status(400).json({
-            error: "asset_issuer is not in the merchant's list of allowed issuers",
+            error:
+              "asset_issuer is not in the merchant's list of allowed issuers",
           });
         }
       }
@@ -199,6 +242,9 @@ function createPaymentsRouter({
         throw insertError;
       }
 
+      // Record metric for payment creation
+      paymentCreatedCounter.inc({ asset: body.asset });
+
       res.status(201).json({
         payment_id: paymentId,
         payment_link: paymentLink,
@@ -206,12 +252,15 @@ function createPaymentsRouter({
         branding_config: resolvedBrandingConfig,
       });
     } catch (err) {
+      if (err.status === 400 && err.details) {
+        return res.status(400).json({ error: err.message, ...err.details });
+      }
       next(err);
     }
   }
 
-  router.post("/create-payment", createPaymentRateLimit, createSession);
-  router.post("/sessions", createPaymentRateLimit, createSession);
+  router.post("/create-payment", createPaymentRateLimit, validateRequest({ body: paymentSessionZodSchema }), sanitizeMetadataMiddleware, createSession);
+  router.post("/sessions", createPaymentRateLimit, validateRequest({ body: paymentSessionZodSchema }), sanitizeMetadataMiddleware, createSession);
 
   /**
    * @swagger
@@ -244,12 +293,26 @@ function createPaymentsRouter({
     validateUuidParam(),
     async (req, res, next) => {
       try {
-        const { data, error } = await supabase
+        // --- Redis read-through cache ---
+        const redis = await connectRedisClient();
+        const cached = await getCachedPayment(redis, req.params.id);
+        if (cached) {
+          return res.json({ payment: cached });
+        }
+
+        let query = supabase
           .from("payments")
           .select(
-            "id, amount, asset, asset_issuer, recipient, description, memo, memo_type, status, tx_id, metadata, created_at, merchants(branding_config)",
-          )
+            "id, amount, asset, asset_issuer, recipient, description, memo, memo_type, status, tx_id, metadata, created_at, merchants(branding_config)"
+          );
+
+        if (req.merchant?.id) {
+          query = query.eq("merchant_id", req.merchant.id);
+        }
+
+        const { data, error } = await query
           .eq("id", req.params.id)
+          .is("deleted_at", null)
           .maybeSingle();
 
         if (error) {
@@ -271,11 +334,14 @@ function createPaymentsRouter({
         };
         delete response.merchants;
 
+        // Cache the result for ~2 s to absorb polling bursts
+        await setCachedPayment(redis, req.params.id, response);
+
         res.json({ payment: response });
       } catch (err) {
         next(err);
       }
-    },
+    }
   );
 
   /**
@@ -284,30 +350,6 @@ function createPaymentsRouter({
    *   post:
    *     summary: Verify a payment on the Stellar network
    *     tags: [Payments]
-   *     parameters:
-   *       - in: path
-   *         name: id
-   *         required: true
-   *         schema:
-   *           type: string
-   *         description: Payment ID
-   *     responses:
-   *       200:
-   *         description: Verification result
-   *         content:
-   *           application/json:
-   *             schema:
-   *               type: object
-   *               properties:
- *                 status:
-   *                   type: string
-   *                   enum: [pending, confirmed]
-   *                 tx_id:
-   *                   type: string
-   *                 webhook:
-   *                   type: object
-   *       404:
-   *         description: Payment not found
    */
   router.post(
     "/verify-payment/:id",
@@ -315,12 +357,19 @@ function createPaymentsRouter({
     validateUuidParam(),
     async (req, res, next) => {
       try {
-        const { data, error } = await supabase
+        let query = supabase
           .from("payments")
           .select(
-            "id, merchant_id, amount, asset, asset_issuer, recipient, status, tx_id, memo, memo_type, webhook_url, merchants(webhook_secret)",
-          )
+            "id, merchant_id, amount, asset, asset_issuer, recipient, status, tx_id, memo, memo_type, webhook_url, merchants(webhook_secret, webhook_version, notification_email, email)"
+          );
+
+        if (req.merchant?.id) {
+          query = query.eq("merchant_id", req.merchant.id);
+        }
+
+        const { data, error } = await query
           .eq("id", req.params.id)
+          .is("deleted_at", null)
           .maybeSingle();
 
         if (error) {
@@ -353,15 +402,31 @@ function createPaymentsRouter({
           return res.json({ status: "pending" });
         }
 
+        // Calculate latency from creation to confirmation
+        const createdAt = new Date(data.created_at);
+        const now = new Date();
+        const latencySeconds = (now - createdAt) / 1000;
+
         const { error: updateError } = await supabase
           .from("payments")
-          .update({ status: "confirmed", tx_id: match.transaction_hash })
+          .update({
+            status: "confirmed",
+            tx_id: match.transaction_hash,
+            completion_duration_seconds: Math.floor(latencySeconds)
+          })
           .eq("id", data.id);
 
         if (updateError) {
           updateError.status = 500;
           throw updateError;
         }
+
+        // --- Invalidate cache so next poll sees confirmed status immediately ---
+        const redis = await connectRedisClient();
+        await invalidatePaymentCache(redis, data.id);
+        // Record metrics for confirmation
+        paymentConfirmedCounter.inc({ asset: data.asset });
+        paymentConfirmationLatency.observe({ asset: data.asset }, latencySeconds);
 
         // Emit real-time event to the merchant's private room (issue #229)
         const io = req.app.locals.io;
@@ -378,23 +443,56 @@ function createPaymentsRouter({
         }
 
         const merchantSecret = data.merchants?.webhook_secret;
+        const merchantVersion = data.merchants?.webhook_version || "v1";
 
-        const webhookResult = await sendWebhook(
-          data.webhook_url,
+        const webhookPayload = getPayloadForVersion(
+          merchantVersion,
+          "payment.confirmed",
           {
-            event: "payment.confirmed",
             payment_id: data.id,
             amount: data.amount,
             asset: data.asset,
             asset_issuer: data.asset_issuer,
             recipient: data.recipient,
             tx_id: match.transaction_hash,
-          },
-          merchantSecret,
+          }
+        );
+
+        const webhookResult = await sendWebhook(
+          data.webhook_url,
+          webhookPayload,
+          merchantSecret
         );
 
         if (!webhookResult.ok && !webhookResult.skipped) {
           console.warn("Webhook failed", webhookResult);
+        }
+
+        // Fire-and-forget receipt email — must not block the response
+        const receiptTo =
+          data.merchants?.notification_email || data.merchants?.email;
+
+        if (receiptTo) {
+          const receiptHtml = renderReceiptEmail({
+            payment: { ...data, tx_id: match.transaction_hash },
+            merchant: data.merchants,
+          });
+          Promise.resolve()
+            .then(() =>
+              sendReceiptEmail({
+                to: receiptTo,
+                subject: `Payment Receipt – ${data.id}`,
+                html: receiptHtml,
+              })
+            )
+            .then((result) => {
+              if (!result.ok) {
+                console.warn("Receipt email failed", result.error);
+              }
+            })
+            .catch((err) => {
+              console.warn("Receipt email error", err);
+            });
         }
 
         res.json({
@@ -406,7 +504,7 @@ function createPaymentsRouter({
       } catch (err) {
         next(err);
       }
-    },
+    }
   );
 
   /**
@@ -453,33 +551,37 @@ function createPaymentsRouter({
    *       401:
    *         description: Missing or invalid API key
    */
-  router.get("/payments", async (req, res, next) => {
+  router.get("/payments", validateRequest({ query: paginationQuerySchema }), async (req, res, next) => {
     try {
-      let page = parseInt(req.query.page, 10) || 1;
-      let limit = parseInt(req.query.limit, 10) || 10;
-
-      if (page < 1) page = 1;
-      if (limit < 1) limit = 1;
-      if (limit > 100) limit = 100;
+      let page = req.query.page;
+      let limit = req.query.limit;
 
       const offset = (page - 1) * limit;
 
-      const { count: totalCount, error: countError } = await supabase
+      let countQuery = supabase
         .from("payments")
         .select("*", { count: "exact", head: true })
         .eq("merchant_id", req.merchant.id);
+
+      countQuery = applyPaymentFilters(countQuery, req);
+
+      const { count: totalCount, error: countError } = await countQuery;
 
       if (countError) {
         countError.status = 500;
         throw countError;
       }
 
-      const { data: payments, error: dataError } = await supabase
+      let dataQuery = supabase
         .from("payments")
         .select(
-          "id, amount, asset, asset_issuer, recipient, description, status, tx_id, created_at",
+          "id, amount, asset, asset_issuer, recipient, description, status, tx_id, created_at"
         )
-        .eq("merchant_id", req.merchant.id)
+        .eq("merchant_id", req.merchant.id);
+
+      dataQuery = applyPaymentFilters(dataQuery, req);
+
+      const { data: payments, error: dataError } = await dataQuery
         .order("created_at", { ascending: false })
         .range(offset, offset + limit - 1);
 
@@ -543,56 +645,8 @@ function createPaymentsRouter({
    */
   router.get("/metrics/7day", async (req, res, next) => {
     try {
-      const sevenDaysAgo = new Date();
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-      const { data: payments, error } = await supabase
-        .from("payments")
-        .select("amount, created_at, status")
-        .eq("merchant_id", req.merchant.id)
-        .gte("created_at", sevenDaysAgo.toISOString())
-        .order("created_at", { ascending: true });
-
-      if (error) {
-        error.status = 500;
-        throw error;
-      }
-
-      const metricsMap = new Map();
-      let totalVolume = 0;
-
-      payments.forEach((payment) => {
-        const date = new Date(payment.created_at).toISOString().split("T")[0];
-        const volume = Number(payment.amount) || 0;
-
-        if (!metricsMap.has(date)) {
-          metricsMap.set(date, { date, volume: 0, count: 0 });
-        }
-
-        const dayMetric = metricsMap.get(date);
-        dayMetric.volume += volume;
-        dayMetric.count += 1;
-        totalVolume += volume;
-      });
-
-      const data = [];
-      for (let i = 6; i >= 0; i -= 1) {
-        const date = new Date();
-        date.setDate(date.getDate() - i);
-        const dateStr = date.toISOString().split("T")[0];
-
-        if (metricsMap.has(dateStr)) {
-          data.push(metricsMap.get(dateStr));
-        } else {
-          data.push({ date: dateStr, volume: 0, count: 0 });
-        }
-      }
-
-      res.json({
-        data,
-        total_volume: Number(totalVolume.toFixed(2)),
-        total_payments: payments.length,
-      });
+      const result = await paymentService.getRollingMetrics(req.merchant.id);
+      res.json(result);
     } catch (err) {
       next(err);
     }
@@ -639,84 +693,12 @@ function createPaymentsRouter({
     validateUuidParam(),
     async (req, res, next) => {
       try {
-        const { data: payment, error } = await supabase
-          .from("payments")
-          .select(
-            "id, merchant_id, amount, asset, asset_issuer, recipient, status, tx_id, metadata",
-          )
-          .eq("id", req.params.id)
-          .eq("merchant_id", req.merchant.id)
-          .maybeSingle();
-
-        if (error) {
-          error.status = 500;
-          throw error;
-        }
-
-        if (!payment) {
-          return res.status(404).json({ error: "Payment not found" });
-        }
-
-        if (payment.status !== "confirmed") {
-          return res.status(400).json({
-            error: "Only confirmed payments can be refunded",
-          });
-        }
-
-        if (payment.metadata?.refund_status === "refunded") {
-          return res.status(400).json({
-            error: "Payment already refunded",
-          });
-        }
-
-        const StellarSdk = await import("stellar-sdk");
-        const HORIZON_URL =
-          process.env.STELLAR_HORIZON_URL ||
-          (process.env.STELLAR_NETWORK === "public"
-            ? "https://horizon.stellar.org"
-            : "https://horizon-testnet.stellar.org");
-
-        const server = new StellarSdk.Horizon.Server(HORIZON_URL);
-        const tx = await server
-          .transactions()
-          .transaction(payment.tx_id)
-          .call();
-
-        const refundDestination = tx.source_account;
-
-        const refundTx = await createRefundTransaction({
-          sourceAccount: payment.recipient,
-          destination: refundDestination,
-          amount: payment.amount,
-          assetCode: payment.asset,
-          assetIssuer: payment.asset_issuer,
-          memo: `Refund: ${payment.id.substring(0, 8)}`,
-        });
-
-        await supabase
-          .from("payments")
-          .update({
-            metadata: {
-              ...payment.metadata,
-              refund_status: "pending",
-              refund_xdr: refundTx.xdr,
-              refund_created_at: new Date().toISOString(),
-            },
-          })
-          .eq("id", payment.id);
-
-        res.json({
-          xdr: refundTx.xdr,
-          hash: refundTx.hash,
-          refund_amount: payment.amount,
-          refund_destination: refundDestination,
-          instructions:
-            "Sign this transaction with your merchant wallet and submit to Stellar network. Then call POST /api/payments/:id/refund/confirm with the transaction hash.",
-        });
+        const result = await paymentService.generateRefundTx(req.params.id, req.merchant.id);
+        res.json(result);
       } catch (err) {
         next(err);
       }
-    },
+    }
   );
 
   /**
@@ -754,13 +736,10 @@ function createPaymentsRouter({
   router.post(
     "/payments/:id/refund/confirm",
     validateUuidParam(),
+    validateRequest({ body: refundConfirmSchema }),
     async (req, res, next) => {
       try {
         const { tx_hash } = req.body;
-
-        if (!tx_hash) {
-          return res.status(400).json({ error: "Transaction hash required" });
-        }
 
         const { data: payment, error } = await supabase
           .from("payments")
@@ -798,44 +777,8 @@ function createPaymentsRouter({
       } catch (err) {
         next(err);
       }
-    },
+    }
   );
-
-
-  /**
-   * Fetches the anchor's stellar.toml and extracts its SEP-0024 transfer server URL.
-   * Every SEP-compliant anchor publishes this at /.well-known/stellar.toml
-   *
-   * @param {string} anchorDomain - e.g. "testanchor.stellar.org"
-   * @returns {Promise<string>} - The TRANSFER_SERVER_SEP0024 URL
-   */
-  async function fetchAnchorToml(anchorDomain) {
-    const tomlUrl = `https://${anchorDomain}/.well-known/stellar.toml`;
-    const response = await fetch(tomlUrl);
-
-    if (!response.ok) {
-      throw Object.assign(
-        new Error(`Failed to fetch anchor TOML from ${tomlUrl}`),
-        { status: 502 }
-      );
-    }
-
-    const text = await response.text();
-
-    // Parse TRANSFER_SERVER_SEP0024 from the TOML file
-    // Example line: TRANSFER_SERVER_SEP0024 = "https://sep24.circle.com/sep24"
-    const match = text.match(/TRANSFER_SERVER_SEP0024\s*=\s*"([^"]+)"/);
-    if (!match) {
-      throw Object.assign(
-        new Error(
-          `Anchor TOML at ${tomlUrl} is missing TRANSFER_SERVER_SEP0024`
-        ),
-        { status: 502 }
-      );
-    }
-
-    return match[1]; // The base URL of the anchor's SEP-0024 API
-  }
 
   /**
    * @swagger
@@ -897,310 +840,285 @@ function createPaymentsRouter({
    *       502:
    *         description: Anchor request failed
    */
-  router.post("/anchor/sep24/deposit", async (req, res, next) => {
-    try {
-      const { asset_code, account, amount, anchor_domain } = req.body;
+  router.get(
+    "/path-payment-quote/:id",
+    validateUuidParam(),
+    validateRequest({ query: pathPaymentQuoteQuerySchema }),
+    async (req, res, next) => {
+      try {
+        const sourceAsset = req.query.source_asset;
+        const sourceAssetIssuer = req.query.source_asset_issuer || null;
+        const sourceAccount = req.query.source_account;
 
-      if (!asset_code || !account) {
-        return res.status(400).json({
-          error: "asset_code and account are required",
-        });
-      }
+        let query = supabase
+          .from("payments")
+          .select("id, amount, asset, asset_issuer, recipient, status");
 
-      const domain = anchor_domain || process.env.ANCHOR_DOMAIN;
-      if (!domain) {
-        return res.status(500).json({
-          error:
-            "No anchor domain configured. Set ANCHOR_DOMAIN in your .env file (e.g. testanchor.stellar.org)",
-        });
-      }
-
-      // Step 1: Read the anchor's TOML to get its SEP-0024 server URL
-      const transferServer = await fetchAnchorToml(domain);
-
-      // Step 2: Call the anchor's deposit endpoint
-      // The anchor returns a URL for the user to open — we never see bank details
-      const anchorRes = await fetch(
-        `${transferServer}/transactions/deposit/interactive`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            // If your anchor requires a JWT bearer token, add it here:
-            // "Authorization": `Bearer ${your_sep10_jwt}`,
-          },
-          body: JSON.stringify({
-            asset_code,
-            account,
-            ...(amount !== undefined && { amount: String(amount) }),
-          }),
+        if (req.merchant?.id) {
+          query = query.eq("merchant_id", req.merchant.id);
         }
-      );
 
-      if (!anchorRes.ok) {
-        const errBody = await anchorRes.text();
-        return res.status(502).json({
-          error: "Anchor rejected the deposit request",
-          anchor_status: anchorRes.status,
-          detail: errBody,
+        const { data, error } = await query
+          .eq("id", req.params.id)
+          .is("deleted_at", null)
+          .maybeSingle();
+
+        if (error) {
+          error.status = 500;
+          throw error;
+        }
+
+        if (!data) {
+          return res.status(404).json({ error: "Payment not found" });
+        }
+
+        const sameAsset =
+          sourceAsset.toUpperCase() === data.asset.toUpperCase() &&
+          sourceAssetIssuer === (data.asset_issuer || null);
+
+        if (sameAsset) {
+          return res.status(400).json({
+            error:
+              "Source asset is the same as destination asset. Use a direct payment.",
+          });
+        }
+
+        const quote = await findStrictReceivePaths({
+          sourceAccount,
+          destAssetCode: data.asset,
+          destAssetIssuer: data.asset_issuer,
+          destAmount: String(data.amount),
+          sourceAssetCode: sourceAsset,
+          sourceAssetIssuer,
         });
+
+        if (!quote) {
+          return res.status(404).json({
+            error: "No path found for this asset pair",
+          });
+        }
+
+        const SLIPPAGE = 0.01; // 1%
+        const sendMax = (
+          parseFloat(quote.source_amount) *
+          (1 + SLIPPAGE)
+        ).toFixed(7);
+
+        res.json({
+          source_asset: quote.source_asset_code,
+          source_asset_issuer: quote.source_asset_issuer,
+          source_amount: quote.source_amount,
+          send_max: sendMax,
+          destination_asset: data.asset,
+          destination_asset_issuer: data.asset_issuer,
+          destination_amount: String(data.amount),
+          path: quote.path,
+          slippage: SLIPPAGE,
+        });
+      } catch (err) {
+        next(err);
       }
-
-      const anchorData = await anchorRes.json();
-
-      // anchorData shape (SEP-0024 spec):
-      // {
-      //   type: "interactive_customer_info_needed",
-      //   url:  "https://anchor.example.com/sep24/transactions/deposit?token=...",
-      //   id:   "2cb4c100-a1e2-4273-9b2c-abc123"
-      // }
-      res.json({
-        type: anchorData.type,
-        url: anchorData.url,           // Frontend opens this in a popup
-        id: anchorData.id,             // Poll this with GET /anchor/sep24/transaction/:id
-        anchor_domain: domain,
-      });
-    } catch (err) {
-      next(err);
     }
-  });
+  );
 
   /**
    * @swagger
    * /api/anchor/sep24/withdraw:
    *   post:
-   *     summary: Initiate a SEP-0024 hosted withdrawal (Stellar token → fiat)
-   *     description: >
-   *       Starts an interactive withdrawal flow with a Stellar anchor. Returns a URL
-   *       the frontend opens in a popup where the user enters their bank/cash-out details.
+   *     summary: Initiate a SEP-0024 hosted withdrawal
    *     tags: [Anchor / SEP-0024]
-   *     security:
-   *       - ApiKeyAuth: []
-   *     requestBody:
-   *       required: true
-   *       content:
-   *         application/json:
-   *           schema:
-   *             type: object
-   *             required: [asset_code, account]
-   *             properties:
-   *               asset_code:
-   *                 type: string
-   *                 description: Stellar asset code to withdraw (e.g. USDC, EURC)
-   *                 example: USDC
-   *               account:
-   *                 type: string
-   *                 description: User's Stellar public key that holds the tokens
-   *               amount:
-   *                 type: number
-   *                 description: Optional pre-fill amount for the withdrawal form
-   *               anchor_domain:
-   *                 type: string
-   *                 description: Anchor domain override (defaults to ANCHOR_DOMAIN env var)
-   *     responses:
-   *       200:
-   *         description: Interactive withdrawal URL from the anchor
-   *         content:
-   *           application/json:
-   *             schema:
-   *               type: object
-   *               properties:
-   *                 type:
-   *                   type: string
-   *                   example: interactive_customer_info_needed
-   *                 url:
-   *                   type: string
-   *                   description: Open this URL in a popup for the user to complete the withdrawal
-   *                 id:
-   *                   type: string
-   *                   description: Anchor transaction ID for polling
-   *                 anchor_domain:
-   *                   type: string
-   *       400:
-   *         description: Missing required fields
-   *       500:
-   *         description: ANCHOR_DOMAIN not configured
-   *       502:
-   *         description: Anchor request failed
    */
   router.post("/anchor/sep24/withdraw", async (req, res, next) => {
     try {
       const { asset_code, account, amount, anchor_domain } = req.body;
+      if (!data) {
+        return res.status(404).json({ error: "Payment not found" });
+      }
 
-      if (!asset_code || !account) {
+      // No quote needed if customer is already paying with the right asset
+      const sameAsset =
+        sourceAsset.toUpperCase() === data.asset.toUpperCase() &&
+        (sourceAssetIssuer || null) === (data.asset_issuer || null);
+
+      if (sameAsset) {
         return res.status(400).json({
-          error: "asset_code and account are required",
-        });
-      }
-
-      const domain = anchor_domain || process.env.ANCHOR_DOMAIN;
-      if (!domain) {
-        return res.status(500).json({
           error:
-            "No anchor domain configured. Set ANCHOR_DOMAIN in your .env file (e.g. testanchor.stellar.org)",
+            "Source asset is the same as destination asset. Use a direct payment.",
         });
       }
 
-      // Step 1: Discover the anchor's SEP-0024 server from its TOML
-      const transferServer = await fetchAnchorToml(domain);
+      const SLIPPAGE = 0.01; // 1%
 
-      // Step 2: Call the anchor's withdrawal endpoint
-      const anchorRes = await fetch(
-        `${transferServer}/transactions/withdraw/interactive`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            // "Authorization": `Bearer ${your_sep10_jwt}`,
-          },
-          body: JSON.stringify({
-            asset_code,
-            account,
-            ...(amount !== undefined && { amount: String(amount) }),
-          }),
-        }
-      );
+      const quote = await findStrictReceivePaths({
+        sourceAccount,
+        destAssetCode: data.asset,
+        destAssetIssuer: data.asset_issuer,
+        destAmount: String(data.amount),
+        sourceAssetCode: sourceAsset,
+        sourceAssetIssuer,
+      });
 
-      if (!anchorRes.ok) {
-        const errBody = await anchorRes.text();
-        return res.status(502).json({
-          error: "Anchor rejected the withdrawal request",
-          anchor_status: anchorRes.status,
-          detail: errBody,
+      if (!quote) {
+        return res.status(404).json({
+          error: "No path found for this asset pair",
         });
       }
 
-      const anchorData = await anchorRes.json();
+      const sendMax = (
+        parseFloat(quote.source_amount) *
+        (1 + SLIPPAGE)
+      ).toFixed(7);
 
       res.json({
-        type: anchorData.type,
-        url: anchorData.url,           // Frontend opens this in a popup
-        id: anchorData.id,             // Poll this with GET /anchor/sep24/transaction/:id
-        anchor_domain: domain,
+        source_asset: quote.source_asset_code,
+        source_asset_issuer: quote.source_asset_issuer,
+        source_amount: quote.source_amount,
+        send_max: sendMax,
+        destination_asset: data.asset,
+        destination_asset_issuer: data.asset_issuer,
+        destination_amount: String(data.amount),
+        path: quote.path,
+        slippage: SLIPPAGE,
       });
     } catch (err) {
       next(err);
     }
-  });
+  }
+  );
 
   /**
    * @swagger
    * /api/anchor/sep24/transaction/{id}:
-   *   get:
-   *     summary: Poll the status of a SEP-0024 anchor transaction
-   *     description: >
-   *       Fetches the current status of a deposit or withdrawal transaction from
-   *       the anchor. Call this repeatedly after the user closes the popup to check
-   *       whether the transaction has completed.
-   *     tags: [Anchor / SEP-0024]
-   *     security:
-   *       - ApiKeyAuth: []
+   * get:
+   * summary: Poll the status of a SEP-0024 anchor transaction
+   * description: >
+   * Fetches the current status of a deposit or withdrawal transaction from
+   * the anchor. Call this repeatedly after the user closes the popup to check
+   * whether the transaction has completed.
+   * tags: [Anchor / SEP-0024]
+   * security:
+   * - ApiKeyAuth: []
+   * parameters:
+   * - in: path
+   * name: id
+   * required: true
+   * schema:
+   * type: string
+   * description: Anchor transaction ID returned from /deposit or /withdraw
+   * - in: query
+   * name: anchor_domain
+   * schema:
+   * type: string
+   * description: Anchor domain override (defaults to ANCHOR_DOMAIN env var)
+   * responses:
+   * 200:
+   * description: Transaction object from the anchor
+   * content:
+   * application/json:
+   * schema:
+   * type: object
+   * properties:
+   * transaction:
+   * type: object
+   * properties:
+   * id:
+   * type: string
+   * status:
+   * type: string
+   * description: >
+   * One of: incomplete, pending_user_transfer_start,
+   * pending_anchor, pending_stellar, completed, error
+   * amount_in:
+   * type: string
+   * amount_out:
+   * type: string
+   * stellar_transaction_id:
+   * type: string
+   * more_info_url:
+   * type: string
+   * 400:
+   * description: Missing transaction ID
+   * 500:
+   * description: ANCHOR_DOMAIN not configured
+   * 502:
+   * description: Anchor request failed
+   * /api/payments/{id}:
+   *   delete:
+   *     summary: Soft delete a payment (preserves audit logs)
+   *     tags: [Payments]
    *     parameters:
    *       - in: path
    *         name: id
    *         required: true
    *         schema:
    *           type: string
-   *         description: Anchor transaction ID returned from /deposit or /withdraw
-   *       - in: query
-   *         name: anchor_domain
-   *         schema:
-   *           type: string
-   *         description: Anchor domain override (defaults to ANCHOR_DOMAIN env var)
+   *         description: Payment ID
    *     responses:
    *       200:
-   *         description: Transaction object from the anchor
+   *         description: Payment soft deleted
    *         content:
    *           application/json:
    *             schema:
    *               type: object
    *               properties:
-   *                 transaction:
-   *                   type: object
-   *                   properties:
-   *                     id:
-   *                       type: string
-   *                     status:
-   *                       type: string
-   *                       description: >
-   *                         One of: incomplete, pending_user_transfer_start,
-   *                         pending_anchor, pending_stellar, completed, error
-   *                     amount_in:
-   *                       type: string
-   *                     amount_out:
-   *                       type: string
-   *                     stellar_transaction_id:
-   *                       type: string
-   *                     more_info_url:
-   *                       type: string
-   *       400:
-   *         description: Missing transaction ID
-   *       500:
-   *         description: ANCHOR_DOMAIN not configured
-   *       502:
-   *         description: Anchor request failed
+   *                 message:
+   *                   type: string
+   *                 payment_id:
+   *                   type: string
+   *                 deleted_at:
+   *                   type: string
+   *       404:
+   *         description: Payment not found
+   *       410:
+   *         description: Payment already deleted
    */
-  router.get("/anchor/sep24/transaction/:id", async (req, res, next) => {
+  router.delete("/payments/:id", validateUuidParam(), async (req, res, next) => {
     try {
-      const { id } = req.params;
+      // First check if payment exists and is not already deleted
+      const { data: existing, error: fetchError } = await supabase
+        .from("payments")
+        .select("id, deleted_at, merchant_id")
+        .eq("id", req.params.id)
+        .maybeSingle();
 
-      if (!id) {
-        return res.status(400).json({ error: "Transaction ID is required" });
+      if (fetchError) {
+        fetchError.status = 500;
+        throw fetchError;
       }
 
-      const domain = req.query.anchor_domain || process.env.ANCHOR_DOMAIN;
-      if (!domain) {
-        return res.status(500).json({
-          error:
-            "No anchor domain configured. Set ANCHOR_DOMAIN in your .env file",
+      if (!existing) {
+        return res.status(404).json({ error: "Payment not found" });
+      }
+
+      // Verify merchant owns this payment
+      if (req.merchant?.id && existing.merchant_id !== req.merchant.id) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      if (existing.deleted_at) {
+        return res.status(410).json({
+          error: "Payment already deleted",
+          deleted_at: existing.deleted_at
         });
       }
 
-      // Discover the anchor's SEP-0024 server
-      const transferServer = await fetchAnchorToml(domain);
+      // Soft delete by setting deleted_at timestamp
+      const now = new Date().toISOString();
+      const { error: updateError } = await supabase
+        .from("payments")
+        .update({ deleted_at: now })
+        .eq("id", req.params.id);
 
-      // Fetch the transaction status from the anchor
-      const anchorRes = await fetch(
-        `${transferServer}/transaction?id=${encodeURIComponent(id)}`,
-        {
-          headers: {
-            // "Authorization": `Bearer ${your_sep10_jwt}`,
-          },
-        }
-      );
-
-      if (!anchorRes.ok) {
-        return res.status(502).json({
-          error: "Failed to fetch transaction status from anchor",
-          anchor_status: anchorRes.status,
-        });
+      if (updateError) {
+        updateError.status = 500;
+        throw updateError;
       }
 
-      const data = await anchorRes.json();
-
-      // Anchor response shape (SEP-0024 spec):
-      // {
-      //   transaction: {
-      //     id:                     "2cb4c100-...",
-      //     kind:                   "deposit",
-      //     status:                 "completed",   ← watch this field
-      //     amount_in:              "100.00",
-      //     amount_out:             "99.50",
-      //     amount_fee:             "0.50",
-      //     stellar_transaction_id: "abc123...",   ← on-chain tx hash when done
-      //     more_info_url:          "https://..."
-      //   }
-      // }
-      //
-      // Possible status values:
-      //   incomplete                  — user hasn't finished the popup form yet
-      //   pending_user_transfer_start — waiting for user to send Stellar tokens (withdraw only)
-      //   pending_anchor              — anchor is processing
-      //   pending_stellar             — anchor is waiting for Stellar confirmation
-      //   completed                   — done, tokens delivered
-      //   error                       — something went wrong on the anchor's side
-
-      res.json(data);
+      res.json({
+        message: "Payment soft deleted successfully",
+        payment_id: req.params.id,
+        deleted_at: now
+      });
     } catch (err) {
       next(err);
     }

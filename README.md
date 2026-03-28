@@ -19,6 +19,12 @@ This project aims to feel like Stripe/PayPal, but built on Stellar. Merchants cr
 - Stellar: `stellar-sdk` + Horizon API
 - Frontend: Next.js + Tailwind (starter shell in `frontend/`)
 
+## Prerequisites
+
+- Node.js 20+
+- Redis (required for backend rate limiting)
+- Supabase project (URL, service role key, and Postgres connection string)
+
 ## Quick Start (Backend)
 
 1. Install dependencies:
@@ -30,6 +36,19 @@ npm install
 2. Configure environment:
 ```bash
 cp .env.example .env
+```
+
+If you skip this, backend startup validation fails and prints missing required keys.
+
+Optional: bring up Redis quickly with Docker:
+```bash
+docker run --name stellar-redis -p 6379:6379 redis:7-alpine
+```
+
+Or install Redis locally (example with Homebrew):
+```bash
+brew install redis
+brew services start redis
 ```
 
 3. Fill out `backend/.env`:
@@ -55,9 +74,30 @@ CREATE_PAYMENT_RATE_LIMIT_WINDOW_MS=60000
 npm run dev
 ```
 
+Or start Redis + API together from the backend folder:
+```bash
+docker compose up
+```
+
 API will be available at `http://localhost:4000`.
 
 Rate limiting uses Redis-backed shared state, so multiple API instances behind a load balancer enforce the same counters.
+
+Generate a static OpenAPI asset for SDK generation or external docs:
+```bash
+cd backend
+npm run build:docs
+```
+
+This writes `backend/public/openapi.json`.
+
+Verify the XLM -> USDC path-payment flow on Stellar testnet without a wallet:
+```bash
+cd backend
+npm run verify:path-payment:testnet
+```
+
+This script creates disposable testnet accounts, issues a temporary USDC asset, places a DEX offer, discovers the best XLM -> USDC path, submits a live `path_payment_strict_receive`, and prints the transaction hash plus the recipient's received USDC amount.
 
 ## API Endpoints
 
@@ -111,14 +151,17 @@ Webhook payload:
 }
 ```
 
-## Current Roadmap (Short)
+## Roadmap & Issues
 
-- Add merchant authentication (API keys/JWT)
-- Improve webhook retries + delivery logs
-- Add payment memo support for easier matching
-- Build dashboard views for payments
-- Add tests for API and Stellar verification
+The project currently has a comprehensive roadmap of **100+ active issues** covering:
+- **Core Stellar Integrations**: SEP-0001, SEP-0010, Path Payments, etc.
+- **Backend Architecture**: Service layer refactor, Redis idempotency, API versioning.
+- **Frontend/UX**: Merchant branding, real-time checkout, dashboard analytics.
+- **Security & Reliability**: Webhook signatures, rate limiting, audit logs.
+- **Infrastructure**: Sentry monitoring, Prometheus metrics, database archival.
 
 ## Contributing
 
-Issues are designed to be newcomer-friendly. See the roadmap above and grab any item labeled `good-first-issue`.
+We are actively seeking contributors! See the [GitHub Issues](https://github.com/emdevelopa/Stellar_Payment_API/issues) to get started. Each issue is tagged with complexity (`complexity:trivial`, `complexity:medium`, `complexity:high`) and category.
+
+If you are new, look for issues labeled `good first issue`.

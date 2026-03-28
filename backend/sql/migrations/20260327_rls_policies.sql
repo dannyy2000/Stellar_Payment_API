@@ -104,3 +104,17 @@ create policy webhook_delivery_logs_select_own
         )
     )
   );
+
+drop policy if exists webhook_delivery_logs_insert_own on webhook_delivery_logs;
+create policy webhook_delivery_logs_insert_own
+  on webhook_delivery_logs for insert
+  with check (
+    exists (
+      select 1 from payments p
+      where p.id = webhook_delivery_logs.payment_id
+        and (
+          p.merchant_id = auth.uid()
+          or p.merchant_id = nullif(current_setting('app.current_merchant_id', true), '')::uuid
+        )
+    )
+  );

@@ -1,12 +1,14 @@
+import 'dotenv/config';
+import { randomUUID } from "crypto";
 import cors from "cors";
-import "dotenv/config";
+
 import express from "express";
 import morgan from "morgan";
 import swaggerUi from "swagger-ui-express";
-import { swaggerDocument } from './swagger.js';
 import { ZodError } from "zod";
 import createPaymentsRouter from "./routes/payments.js";
-import merchantsRouter from "./routes/merchants.js";
+import createMerchantsRouter from "./routes/merchants.js";
+import webhooksRouter from "./routes/webhooks.js";
 import metricsRouter from "./routes/metrics.js";
 import authRouter from "./routes/auth.js";
 import auditRouter from "./routes/audit.js";
@@ -21,12 +23,17 @@ import { closeRedisClient, connectRedisClient } from "./lib/redis.js";
 import {
   createRedisRateLimitStore,
   createVerifyPaymentRateLimit,
+  createMerchantRegistrationRateLimit,
 } from "./lib/rate-limit.js";
+import { createSwaggerSpec } from "./swagger.js";
 
 validateEnvironmentVariables();
 
 const redisClient = await connectRedisClient();
 const verifyPaymentRateLimit = createVerifyPaymentRateLimit({
+  store: createRedisRateLimitStore({ client: redisClient }),
+});
+const merchantRegistrationRateLimit = createMerchantRegistrationRateLimit({
   store: createRedisRateLimitStore({ client: redisClient }),
 });
 
@@ -36,18 +43,22 @@ const port = process.env.PORT || 4000;
 // Make the pool available to all routes via req.app.locals.pool
 app.locals.pool = pool;
 
-const swaggerSpec = swaggerJsdoc({
-  definition: {
-    openapi: "3.0.0",
-    info: {
-      title: "Stellar Payment API",
-      version: "0.1.0",
-      description: "API for creating and verifying Stellar network payments",
-    },
-    servers: [{ url: `http://localhost:${port}` }],
-  },
-  apis: ["./src/routes/*.js"],
+const swaggerSpec = createSwaggerSpec({
+  serverUrl: `http://localhost:${port}`,
 });
+
+// Attach a unique x-request-id to every request/response for tracing
+app.use((req, res, next) => {
+  const requestId = (req.headers["x-request-id"] || randomUUID());
+  req.id = requestId;
+  res.setHeader("x-request-id", requestId);
+  next();
+});
+
+// Custom morgan token so request IDs appear in every log line
+morgan.token("request-id", (req) => req.id);
+
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS
   ? process.env.CORS_ALLOWED_ORIGINS.split(",").map((o) => o.trim())
@@ -64,18 +75,17 @@ app.use(
       }
     },
     credentials: true,
-  }),
+  })
 );
 
 app.use(express.json({ limit: "1mb" }));
-app.use(morgan("dev"));
+app.use(morgan(":request-id :method :url :status :response-time ms"));
 
 app.get("/health", async (req, res) => {
   try {
-    const [dbResult, horizonReachable, redisReachable] = await Promise.all([
+    const [dbResult, horizonReachable] = await Promise.all([
       supabase.from("merchants").select("id").limit(1),
       isHorizonReachable(),
-      redisClient.ping().then(() => true).catch(() => false),
     ]);
 
     const { error } = dbResult;
@@ -86,7 +96,6 @@ app.get("/health", async (req, res) => {
         service: "stellar-payment-api",
         error: "Database unavailable",
         horizon_reachable: horizonReachable,
-        redis_reachable: redisReachable,
       });
     }
 
@@ -96,17 +105,6 @@ app.get("/health", async (req, res) => {
         service: "stellar-payment-api",
         error: "Horizon unavailable",
         horizon_reachable: false,
-        redis_reachable: redisReachable,
-      });
-    }
-
-    if (!redisReachable) {
-      return res.status(503).json({
-        ok: false,
-        service: "stellar-payment-api",
-        error: "Redis unavailable",
-        horizon_reachable: horizonReachable,
-        redis_reachable: false,
       });
     }
 
@@ -114,7 +112,6 @@ app.get("/health", async (req, res) => {
       ok: true,
       service: "stellar-payment-api",
       horizon_reachable: true,
-      redis_reachable: true,
     });
   } catch {
     res.status(503).json({
@@ -122,7 +119,6 @@ app.get("/health", async (req, res) => {
       service: "stellar-payment-api",
       error: "Health check failed",
       horizon_reachable: false,
-      redis_reachable: false,
     });
   }
 });
@@ -133,28 +129,34 @@ app.use("/api/sessions", requireApiKeyAuth());
 app.use("/api/sessions", idempotencyMiddleware);
 app.use("/api/payments", requireApiKeyAuth());
 app.use("/api/rotate-key", requireApiKeyAuth());
-app.use("/api/merchant-branding", requireApiKeyAuth());
-app.use("/api/merchant-profile", requireApiKeyAuth());
-app.use("/api/merchant-limits", requireApiKeyAuth());
-app.use("/api/test-webhook", requireApiKeyAuth());
-app.use("/api/audit-logs", requireApiKeyAuth());
-app.use("/api", authRouter);
-app.use("/api", createPaymentsRouter({ verifyPaymentRateLimit }));
+
 app.use("/api", merchantsRouter);
+app.use("/api", webhooksRouter);
 app.use("/api", metricsRouter);
 app.use("/api", auditRouter);
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
 app.use((err, req, res, next) => {
   if (err instanceof ZodError) {
     return res.status(400).json({
-      error: formatZodError(err),
+      error: formatZodError(err), // Zod errors are client-side validation issues, safe to expose.
     });
   }
 
   const status = err.status || 500;
+  let errorMessage;
+
+  if (process.env.NODE_ENV === "production" && status >= 500) {
+    // For 5xx errors in production, return a generic message to avoid leaking internal details.
+    errorMessage = "An unexpected error occurred. Please try again later.";
+    console.error("Unhandled Production Server Error:", err); // Log full error to server console.
+  } else {
+    // For client errors (e.g., 4xx) or in development, expose the error message.
+    errorMessage = err.message || "Internal Server Error";
+    console.error("Unhandled Error:", err); // Log full error to server console.
+  }
+
   res.status(status).json({
-    error: err.message || "Internal Server Error",
+    error: errorMessage,
   });
 });
 

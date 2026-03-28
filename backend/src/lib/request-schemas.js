@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { HEX_COLOR_REGEX } from "./branding.js";
+import { validateMemo } from "./stellar.js";
 
 const VALID_MEMO_TYPES = ["text", "id", "hash", "return"];
 export const MINIMUM_XLM_PAYMENT_AMOUNT = 0.01;
@@ -19,101 +20,121 @@ function optionalTrimmedString() {
   }, z.string().optional());
 }
 
-const amountSchema = z.preprocess((value) => {
-  if (typeof value === "string") {
-    const trimmedValue = value.trim();
-    return trimmedValue === "" ? value : Number(trimmedValue);
-  }
+const amountSchema = z.preprocess(
+  (value) => {
+    if (typeof value === "string") {
+      const trimmedValue = value.trim();
+      return trimmedValue === "" ? value : Number(trimmedValue);
+    }
 
-  return value;
-}, z.number({
-  required_error: "amount is required",
-  invalid_type_error: "Amount must be a positive number",
-}).positive("Amount must be a positive number"));
+    return value;
+  },
+  z
+    .number({
+      required_error: "amount is required",
+      invalid_type_error: "Amount must be a positive number",
+    })
+    .positive("Amount must be a positive number"),
+);
 
 const paymentBaseSchema = z.object({
-    amount: amountSchema,
-    asset: z
-      .string({
-        required_error: "asset is required",
-        invalid_type_error: "asset must be a string",
-      })
-      .trim()
-      .min(1, "asset is required")
-      .transform((value) => value.toUpperCase()),
-    asset_issuer: optionalTrimmedString(),
-    recipient: z
-      .string({
-        required_error: "recipient is required",
-        invalid_type_error: "recipient must be a string",
-      })
-      .trim()
-      .min(1, "recipient is required"),
-    description: optionalTrimmedString(),
-    memo: optionalTrimmedString(),
-    memo_type: optionalTrimmedString().transform((value) =>
-      value ? value.toLowerCase() : undefined
-    ),
-    webhook_url: optionalTrimmedString().refine((value) => {
-      if (!value) {
-        return true;
-      }
+  amount: amountSchema,
+  asset: z
+    .string({
+      required_error: "asset is required",
+      invalid_type_error: "asset must be a string",
+    })
+    .trim()
+    .min(1, "asset is required")
+    .transform((value) => value.toUpperCase()),
+  asset_issuer: optionalTrimmedString(),
+  recipient: z
+    .string({
+      required_error: "recipient is required",
+      invalid_type_error: "recipient must be a string",
+    })
+    .trim()
+    .min(1, "recipient is required"),
+  description: optionalTrimmedString(),
+  memo: optionalTrimmedString(),
+  memo_type: optionalTrimmedString().transform((value) =>
+    value ? value.toLowerCase() : undefined,
+  ),
+  webhook_url: optionalTrimmedString().refine((value) => {
+    if (!value) {
+      return true;
+    }
 
-      return z.string().url().safeParse(value).success;
-    }, "webhook_url must be a valid URL"),
-    metadata: z.unknown().optional(),
-  });
+    return z.string().url().safeParse(value).success;
+  }, "webhook_url must be a valid URL"),
+  metadata: z.unknown().optional(),
+});
 
 function applyPaymentValidationRules(body, ctx) {
-    if (body.asset === "XLM" && body.amount < MINIMUM_XLM_PAYMENT_AMOUNT) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["amount"],
-        message: `Minimum XLM payment amount is ${MINIMUM_XLM_PAYMENT_AMOUNT}`,
-      });
-    }
+  const isValidUnsigned64BitInteger = (value) => {
+    const parsed = (() => {
+      try {
+        return BigInt(value);
+      } catch {
+        return -1n;
+      }
+    })();
+    return (
+      parsed >= 0n && parsed <= 18446744073709551615n && /^\d+$/.test(value)
+    );
+  };
 
-    if (body.asset !== "XLM" && !body.asset_issuer) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["asset_issuer"],
-        message: "asset_issuer is required for non-native assets",
-      });
-    }
+  if (body.asset === "XLM" && body.amount < MINIMUM_XLM_PAYMENT_AMOUNT) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["amount"],
+      message: `Minimum XLM payment amount is ${MINIMUM_XLM_PAYMENT_AMOUNT}`,
+    });
+  }
 
-    if (body.memo && !body.memo_type) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["memo_type"],
-        message: "memo_type is required when memo is provided",
-      });
-    }
+  if (body.asset !== "XLM" && !body.asset_issuer) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["asset_issuer"],
+      message: "asset_issuer is required for non-native assets",
+    });
+  }
 
-    if (body.memo_type && !body.memo) {
+  if (body.memo && !body.memo_type) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["memo_type"],
+      message: "memo_type is required when memo is provided",
+    });
+  }
+
+  if (body.memo_type && !body.memo) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["memo"],
+      message: "memo is required when memo_type is provided",
+    });
+  }
+
+  if (body.memo_type && !VALID_MEMO_TYPES.includes(body.memo_type)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["memo_type"],
+      message: `Invalid memo_type. Must be one of: ${VALID_MEMO_TYPES.join(", ")}`,
+    });
+  }
+
+  // Validate memo format based on type
+  if (body.memo && body.memo_type) {
+    const memoValidation = validateMemo(body.memo, body.memo_type);
+    if (!memoValidation.valid) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["memo"],
-        message: "memo is required when memo_type is provided",
+        message: memoValidation.error,
       });
     }
-
-    if (body.memo_type && !VALID_MEMO_TYPES.includes(body.memo_type)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["memo_type"],
-        message: `Invalid memo_type. Must be one of: ${VALID_MEMO_TYPES.join(", ")}`,
-      });
-    }
-
-    if (body.memo_type === "hash") {
-      if (!body.memo || !/^[0-9a-fA-F]{64}$/.test(body.memo)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["memo"],
-          message: "Invalid hash memo: must be exactly 64 hexadecimal characters",
-        });
-      }
-    }
+  }
 }
 
 export const paymentZodSchema = paymentBaseSchema.superRefine(
@@ -161,31 +182,8 @@ export const registerMerchantZodSchema = z.object({
       send_success_emails: z.boolean().optional(),
     })
     .optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
-
-export const merchantProfileUpdateZodSchema = z
-  .object({
-    notification_email: optionalTrimmedString().refine((value) => {
-      if (!value) {
-        return true;
-      }
-
-      return z.string().email().safeParse(value).success;
-    }, "Invalid notification_email format"),
-    merchant_settings: z
-      .object({
-        send_success_emails: z.boolean().optional(),
-      })
-      .optional(),
-  })
-  .refine(
-    (value) =>
-      value.notification_email !== undefined ||
-      value.merchant_settings !== undefined,
-    {
-      message: "Provide at least one field to update",
-    },
-  );
 
 export const sessionBrandingSchema = z
   .object({
@@ -207,129 +205,120 @@ export const sessionBrandingSchema = z
   })
   .optional();
 
-export const paymentSessionZodSchema = paymentBaseSchema.extend({
-  branding_overrides: sessionBrandingSchema,
-}).superRefine(applyPaymentValidationRules);
+export const paymentSessionZodSchema = paymentBaseSchema
+  .extend({
+    branding_overrides: sessionBrandingSchema,
+  })
+  .superRefine(applyPaymentValidationRules);
 
-export function formatZodError(error) {
-  return error.issues?.[0]?.message || "Validation error";
-}
-
-// ─── Schema Versioning ────────────────────────────────────────────────────────
-
-/**
- * Extract the requested API version from the request.
- * Checks X-API-Version header first, then the `v` query param.
- * Defaults to 1 (current stable).
- *
- * @param {import('express').Request} req
- * @returns {number}
- */
-export function getApiVersion(req) {
-  const header = req.get("X-API-Version");
-  if (header) {
-    const n = parseInt(header, 10);
-    if (!isNaN(n)) return n;
-  }
-  const query = req.query?.v;
-  if (query) {
-    const n = parseInt(query, 10);
-    if (!isNaN(n)) return n;
-  }
-  return 1;
-}
-
-/**
- * v1 payment body schema (legacy / current stable).
- * Uses `recipient` for the destination address.
- */
-export const v1PaymentSessionSchema = paymentSessionZodSchema;
-
-/**
- * v2 payment body schema.
- * Accepts `destination_address` as an alias for `recipient`
- * and uses `callback_url` in place of `webhook_url`.
- * The parser maps these to the internal canonical field names.
- */
-const paymentBaseV2 = z.object({
-  amount: paymentBaseSchema.shape.amount,
-  asset: paymentBaseSchema.shape.asset,
-  asset_issuer: paymentBaseSchema.shape.asset_issuer,
-  destination_address: z
-    .string({
-      required_error: "destination_address is required",
-      invalid_type_error: "destination_address must be a string",
-    })
-    .trim()
-    .min(1, "destination_address is required"),
-  description: paymentBaseSchema.shape.description,
-  memo: paymentBaseSchema.shape.memo,
-  memo_type: paymentBaseSchema.shape.memo_type,
-  callback_url: optionalTrimmedString().refine((value) => {
-    if (!value) return true;
-    return z.string().url().safeParse(value).success;
-  }, "callback_url must be a valid URL"),
-  metadata: z.unknown().optional(),
+export const webhookSettingsSchema = z.object({
+  webhook_url: z.preprocess(
+    (value) => {
+      if (value === null || value === undefined) return undefined;
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        return trimmed === "" ? undefined : trimmed;
+      }
+      return value;
+    },
+    z
+      .string()
+      .url("webhook_url must be a valid URL")
+      .refine((val) => val.startsWith("https://"), "webhook_url must use HTTPS")
+      .optional(),
+  ),
 });
 
-export const v2PaymentSessionSchema = paymentBaseV2
-  .extend({ branding_overrides: sessionBrandingSchema })
-  .superRefine((body, ctx) => {
-    if (body.asset === "XLM" && body.amount < MINIMUM_XLM_PAYMENT_AMOUNT) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["amount"],
-        message: `Minimum XLM payment amount is ${MINIMUM_XLM_PAYMENT_AMOUNT}`,
-      });
-    }
-    if (body.asset !== "XLM" && !body.asset_issuer) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["asset_issuer"],
-        message: "asset_issuer is required for non-native assets",
-      });
-    }
-    if (body.memo && !body.memo_type) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["memo_type"],
-        message: "memo_type is required when memo is provided",
-      });
-    }
-    if (body.memo_type && !body.memo) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["memo"],
-        message: "memo is required when memo_type is provided",
-      });
-    }
-    if (body.memo_type && !VALID_MEMO_TYPES.includes(body.memo_type)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["memo_type"],
-        message: `Invalid memo_type. Must be one of: ${VALID_MEMO_TYPES.join(", ")}`,
-      });
-    }
-  });
+export function formatZodError(error) {
+  if (error && Array.isArray(error.issues)) {
+    return error.issues.map((issue) => ({
+      field: issue.path.join("."),
+      message: issue.message,
+    }));
+  }
+  return "Validation error";
+}
 
 /**
- * Parse the incoming payment body according to the requested API version.
- * Returns a normalised object using canonical internal field names.
- *
- * @param {import('express').Request} req
- * @returns {{ recipient: string, webhook_url?: string, ... }}
+ * Helper to parse and validate payment body for session creation.
  */
 export function parseVersionedPaymentBody(req) {
-  const version = getApiVersion(req);
-
-  if (version >= 2) {
-    const parsed = v2PaymentSessionSchema.parse(req.body || {});
-    return {
-      ...parsed,
-      recipient: parsed.destination_address,
-      webhook_url: parsed.callback_url,
-    };
-  }
-
-  return v1PaymentSessionSchema.parse(req.body || {});
+  return paymentSessionZodSchema.parse(req.body);
 }
+
+// ─── Shared Schemas ────────────────────────────────────────────────────────
+
+export const paginationQuerySchema = z.object({
+  page: z.preprocess(
+    (val) => (val ? Number(val) : 1),
+    z.number().int().min(1).default(1),
+  ),
+  limit: z.preprocess(
+    (val) => (val ? Number(val) : 10),
+    z.number().int().min(1).max(100).default(10),
+  ),
+});
+
+// ─── Authentication Schemas ────────────────────────────────────────────────
+
+export const authChallengeSchema = z.object({
+  account: z
+    .string({
+      required_error: "Account address required",
+      invalid_type_error: "Account must be a string",
+    })
+    .refine(
+      (val) => val.startsWith("G") && val.length === 56,
+      "Invalid Stellar address",
+    ),
+});
+
+export const authVerifySchema = z.object({
+  transaction: z.string({
+    required_error: "Transaction XDR required",
+    invalid_type_error: "Transaction must be a string",
+  }),
+});
+
+// ─── Webhook Schemas ───────────────────────────────────────────────────────
+
+export const testWebhookSchema = z.object({
+  webhook_url: z
+    .string({
+      required_error: "webhook_url is required",
+      invalid_type_error: "webhook_url must be a string",
+    })
+    .url("webhook_url must be a valid URL"),
+});
+
+// ─── Payment Schemas ───────────────────────────────────────────────────────
+
+export const refundConfirmSchema = z.object({
+  tx_hash: z.string({
+    required_error: "Transaction hash required",
+    invalid_type_error: "Transaction hash must be a string",
+  }),
+});
+
+export const pathPaymentQuoteQuerySchema = z.object({
+  source_asset: z.string({
+    required_error: "source_asset query parameter is required",
+  }),
+  source_asset_issuer: z.string().optional(),
+  source_account: z.string({
+    required_error: "source_account query parameter is required",
+  }),
+});
+
+// ─── Metrics Schemas ───────────────────────────────────────────────────────
+
+export const metricsVolumeQuerySchema = z.object({
+  range: z
+    .string()
+    .transform((val) => val.toUpperCase())
+    .refine((val) => ["7D", "30D", "1Y"].includes(val), {
+      message: "Invalid range. Use 7D, 30D, or 1Y.",
+    })
+    .optional()
+    .default("7D"),
+});

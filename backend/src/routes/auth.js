@@ -10,6 +10,9 @@ import {
   verifyChallenge,
   generateSessionToken,
 } from "../lib/sep10-auth.js";
+import { logLoginAttempt } from "../lib/audit.js";
+import { validateRequest } from "../lib/validation.js";
+import { authChallengeSchema, authVerifySchema } from "../lib/request-schemas.js";
 
 const router = express.Router();
 
@@ -46,18 +49,9 @@ const router = express.Router();
  *       400:
  *         description: Invalid request
  */
-router.post("/auth/challenge", async (req, res, next) => {
+router.post("/auth/challenge", validateRequest({ body: authChallengeSchema }), async (req, res, next) => {
   try {
     const { account } = req.body;
-
-    if (!account || typeof account !== "string") {
-      return res.status(400).json({ error: "Account address required" });
-    }
-
-    // Validate Stellar address format
-    if (!account.startsWith("G") || account.length !== 56) {
-      return res.status(400).json({ error: "Invalid Stellar address" });
-    }
 
     const challengeXdr = generateChallenge(account);
     const networkPassphrase =
@@ -107,13 +101,12 @@ router.post("/auth/challenge", async (req, res, next) => {
  *       401:
  *         description: Authentication failed
  */
-router.post("/auth/verify", async (req, res, next) => {
+router.post("/auth/verify", validateRequest({ body: authVerifySchema }), async (req, res, next) => {
+  const ipAddress = req.ip ?? null;
+  const userAgent = req.get("user-agent") ?? null;
+
   try {
     const { transaction } = req.body;
-
-    if (!transaction || typeof transaction !== "string") {
-      return res.status(400).json({ error: "Transaction XDR required" });
-    }
 
     // Extract client account from transaction
     const StellarSdk = await import("stellar-sdk");
@@ -135,6 +128,12 @@ router.post("/auth/verify", async (req, res, next) => {
     // Verify challenge signature
     const verification = verifyChallenge(transaction, clientAccount);
     if (!verification.valid) {
+      await logLoginAttempt({
+        merchantId: null,
+        ipAddress,
+        userAgent,
+        status: "failure",
+      });
       return res.status(401).json({ error: verification.error });
     }
 
@@ -143,6 +142,7 @@ router.post("/auth/verify", async (req, res, next) => {
       .from("merchants")
       .select("id, email, business_name, notification_email")
       .eq("recipient", clientAccount)
+      .is("deleted_at", null)
       .maybeSingle();
 
     if (error) {
@@ -151,6 +151,12 @@ router.post("/auth/verify", async (req, res, next) => {
     }
 
     if (!merchant) {
+      await logLoginAttempt({
+        merchantId: null,
+        ipAddress,
+        userAgent,
+        status: "failure",
+      });
       return res.status(401).json({
         error: "No merchant account found for this Stellar address",
       });
@@ -158,6 +164,14 @@ router.post("/auth/verify", async (req, res, next) => {
 
     // Generate session token
     const token = generateSessionToken(merchant.id, clientAccount);
+
+    // Audit: successful login
+    await logLoginAttempt({
+      merchantId: merchant.id,
+      ipAddress,
+      userAgent,
+      status: "success",
+    });
 
     res.json({
       token,
