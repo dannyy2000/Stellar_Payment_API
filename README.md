@@ -91,6 +91,14 @@ npm run build:docs
 
 This writes `backend/public/openapi.json`.
 
+Verify the XLM -> USDC path-payment flow on Stellar testnet without a wallet:
+```bash
+cd backend
+npm run verify:path-payment:testnet
+```
+
+This script creates disposable testnet accounts, issues a temporary USDC asset, places a DEX offer, discovers the best XLM -> USDC path, submits a live `path_payment_strict_receive`, and prints the transaction hash plus the recipient's received USDC amount.
+
 ## API Endpoints
 
 - `GET /health`
@@ -157,4 +165,3 @@ The project currently has a comprehensive roadmap of **100+ active issues** cove
 We are actively seeking contributors! See the [GitHub Issues](https://github.com/emdevelopa/Stellar_Payment_API/issues) to get started. Each issue is tagged with complexity (`complexity:trivial`, `complexity:medium`, `complexity:high`) and category.
 
 If you are new, look for issues labeled `good first issue`.
-

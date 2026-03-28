@@ -860,6 +860,7 @@ function createPaymentsRouter({
 
         const { data, error } = await query
           .eq("id", req.params.id)
+          .is("deleted_at", null)
           .maybeSingle();
 
         if (error) {
@@ -869,6 +870,17 @@ function createPaymentsRouter({
 
         if (!data) {
           return res.status(404).json({ error: "Payment not found" });
+        }
+
+        const sameAsset =
+          sourceAsset.toUpperCase() === data.asset.toUpperCase() &&
+          sourceAssetIssuer === (data.asset_issuer || null);
+
+        if (sameAsset) {
+          return res.status(400).json({
+            error:
+              "Source asset is the same as destination asset. Use a direct payment.",
+          });
         }
 
         const quote = await findStrictReceivePaths({

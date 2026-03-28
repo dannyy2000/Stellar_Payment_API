@@ -7,6 +7,7 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "build:docs": "node scripts/generate-swagger.js",
+    "verify:path-payment:testnet": "node scripts/verify-path-payment-testnet.js",
     "test": "vitest run",
     "test:integration": "node --experimental-vm-modules node_modules/.bin/jest jest.config.js tests/integration",
     "purge:webhook-logs": "node scripts/purge-webhook-logs.js",
